@@ -7,4 +7,5 @@ LABEL maintainer="Christian Schuhegger <christian.schuhegger@gmx.de>"
 # https://stackoverflow.com/questions/42510052/pip-install-test-not-working-in-python2-7-9-pip-version-6-0-7
 # https://pip.pypa.io/en/stable/reference/pip_install/#editable-installs
 # https://stackoverflow.com/questions/20288711/post-install-script-with-python-setuptools
+RUN pip install --upgrade pip
 RUN cd /home/jovyan/work && git clone https://github.com/cs224/pybnl.git && cd pybnl && pip install -e .[test]
