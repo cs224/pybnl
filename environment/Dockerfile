@@ -8,4 +8,5 @@ LABEL maintainer="Christian Schuhegger <christian.schuhegger@gmx.de>"
 # https://pip.pypa.io/en/stable/reference/pip_install/#editable-installs
 # https://stackoverflow.com/questions/20288711/post-install-script-with-python-setuptools
 RUN pip install --upgrade pip
-RUN cd /home/jovyan/work && git clone https://github.com/cs224/pybnl.git && cd pybnl && pip install -e .[test]
+RUN conda install -c r rpy2=2.9.1
+RUN cd /home/jovyan/work && git clone https://github.com/cs224/pybnl.git@2018-06-04-install-procedure && cd pybnl && pip install -e .[test]
