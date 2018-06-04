@@ -15,13 +15,14 @@ from os import path
 from setuptools.command.develop import develop
 from setuptools.command.install import install
 
+import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
+    rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
+    rpy2.interactive, rpy2.robjects.lib.grdevices
+
 
 # https://stackoverflow.com/questions/20288711/post-install-script-with-python-setuptools
 # http://rpy2.readthedocs.io/en/version_2.8.x/introduction.html#r-packages
 def install_R_dependencies():
-    # import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
-    #     rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
-    #     rpy2.interactive, rpy2.robjects.lib.grdevices
     # rpy2.interactive.process_revents.start()
     # rpy2.robjects.pandas2ri.activate()
 
