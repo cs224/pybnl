@@ -37,11 +37,11 @@ def install_R_dependencies():
                 install.packages("devtools")
                 install.packages("printr")
                 install.packages("bnlearn")
-                # source("https://bioconductor.org/biocLite.R")
-                # biocLite("graph")
-                # biocLite("RBGL")
-                # install.packages("gRbase")
-                # install.packages("gRain")
+                source("https://bioconductor.org/biocLite.R")
+                biocLite("graph", suppressUpdates=TRUE)
+                biocLite("RBGL", suppressUpdates=TRUE)
+                install.packages("gRbase")
+                install.packages("gRain")
         ''')
 
     # R package names
