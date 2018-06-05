@@ -34,14 +34,15 @@ def install_R_dependencies():
     utils.chooseCRANmirror(ind=1) # select the first mirror in the list
 
     rpy2.robjects.r('''
-                install.packages("devtools")
-                install.packages("printr")
-                install.packages("bnlearn")
-                source("https://bioconductor.org/biocLite.R")
-                biocLite("graph", suppressUpdates=TRUE)
-                biocLite("RBGL", suppressUpdates=TRUE)
-                install.packages("gRbase")
-                install.packages("gRain")
+                library(curl)
+                tmp <- tempfile()
+                curl_download("https://bioconductor.org/biocLite.R", tmp)
+                source(tmp)
+                biocLite(c("graph", "RBGL"), suppressUpdates=TRUE, suppressAutoUpdate=TRUE)
+
+                list.of.packages <- c("devtools", "printr", "bnlearn", "gRbase", "gRain")
+                new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+                if(length(new.packages)) install.packages(new.packages)
         ''')
 
     # R package names
