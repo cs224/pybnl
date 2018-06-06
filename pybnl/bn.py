@@ -166,6 +166,33 @@ class DiscreteBayesNetwork():
         else:
             return result, rresult
 
+import tempfile
 
+# https://realpython.com/instance-class-and-static-methods-demystified/
+# https://pandas.pydata.org/pandas-docs/stable/categorical.html
+
+def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
+    tmp_var_name_in  = next(tempfile._get_candidate_names())
+    tmp_var_name_out = next(tempfile._get_candidate_names())
+    rpy2.robjects.globalenv[tmp_var_name_in] = ldf
+
+    rdiscretize = rpy2.robjects.r['discretize']
+    rlevels = rpy2.robjects.r['levels']
+
+    rpy2.robjects.globalenv[tmp_var_name_out] = rdiscretize(rpy2.robjects.globalenv[tmp_var_name_in], breaks=breaks, method=method, ibreaks=ibreaks, idisc=idisc)
+    rdf_ = rpy2.robjects.globalenv[tmp_var_name_out]
+    rdf = rpy2.robjects.pandas2ri.ri2py(rdf_)
+
+    columns = rdf.columns
+    for i, column in enumerate(columns):
+        print((i,column))
+        levels = rlevels(rdf_[i])
+        print(levels)
+        rdf[column] = pd.Categorical(rdf[column], categories=levels, ordered=True)
+
+    rpy2.robjects.globalenv[tmp_var_name_in]  = np.nan
+    rpy2.robjects.globalenv[tmp_var_name_out] = np.nan
+
+    return rdf
 
 
