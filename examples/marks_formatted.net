@@ -1,0 +1,87 @@
+net
+{
+	jenginegenerator6060830225489488864L = "edu.ucla.belief.inference.JoinTreeSettings@2bba05a7";
+	huginenginegenerator3061656038650325130L = "edu.ucla.belief.inference.JoinTreeSettings@8015f06";
+	node_size = (130 55);
+}
+
+node ANL
+{
+	states = ("_9_47]" "_47_60.2]" "_60.2_70]" );
+	position = (544 -26);
+	ismapvariable = "false";
+	diagnosistype = "AUXILIARY";
+	excludepolicy = "include whole CPT";
+}
+node STAT
+{
+	states = ("[9_29.4]" "_29.4_44]" "_44_81]" );
+	position = (891 -27);
+	ismapvariable = "false";
+	diagnosistype = "AUXILIARY";
+	excludepolicy = "include whole CPT";
+}
+node MECH
+{
+	states = ("[0_22.4]" "_22.4_46]" "_46_77]" );
+	position = (461 -402);
+	ismapvariable = "false";
+	diagnosistype = "AUXILIARY";
+	excludepolicy = "include whole CPT";
+}
+node ALG
+{
+	states = ("[15_43]" "_43_59.6]" "_59.6_80]" );
+	position = (669 -214);
+	ismapvariable = "false";
+	diagnosistype = "AUXILIARY";
+	excludepolicy = "include whole CPT";
+}
+node VECT
+{
+	states = ("[9_40]" "_40_61]" "_61_82]" );
+	position = (879 -387);
+	ismapvariable = "false";
+	diagnosistype = "AUXILIARY";
+	excludepolicy = "include whole CPT";
+}
+potential ( ANL | STAT )
+{
+	data = ((	0.8333333	0.1666667	0.0	)
+		(	0.47222222	0.47222222	0.05555556	)
+		(	0.2058824	0.3235294	0.4705882	));
+}
+potential ( STAT | )
+{
+	data = (	0.2045455	0.4090909	0.3863636	);
+}
+potential ( MECH | ALG VECT )
+{
+	data = (((	0.54545455	0.36363636	0.09090909	)
+		(	0.33333333333333337	0.33333333333333337	0.33333333333333337	)
+		(	0.33333333333333337	0.33333333333333337	0.33333333333333337	))
+		((	0.25	0.625	0.125	)
+		(	0.1714285828571417	0.5714285428571456	0.2571428742857126	)
+		(	0.0	0.5714286	0.4285714	))
+		((	0.33333333333333337	0.33333333333333337	0.33333333333333337	)
+		(	0.125	0.375	0.5	)
+		(	0.0	0.1	0.9	)));
+}
+potential ( ALG | ANL STAT )
+{
+	data = (((	0.6666667	0.3333333	0.0	)
+		(	0.3529412	0.6470588	0.0	)
+		(	0.1428571	0.8571429	0.0	))
+		((	0.3333333	0.6666667	0.0	)
+		(	0.058823530000000006	0.8823529400000001	0.058823530000000006	)
+		(	0.0909090909090909	0.45454545454545453	0.45454545454545453	))
+		((	0.33333333333333337	0.33333333333333337	0.33333333333333337	)
+		(	0.0	1.0	0.0	)
+		(	0.0	0.25	0.75	)));
+}
+potential ( VECT | ALG )
+{
+	data = ((	0.55	0.45	0.0	)
+		(	0.16	0.7	0.14	)
+		(	0.0	0.4444444	0.5555556	));
+}

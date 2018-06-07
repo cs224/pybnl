@@ -31,7 +31,7 @@ def test_rain_sprinkler_grasswet():
         ], columns=['sprinkler', 'rain', 'grasswet', 'p']
     )
 
-    dbn_rain_springkler_grasswet = pybnl.bn.DiscreteBayesNetwork([df_rain_pm, df_sprinkler_cpm, df_grasswet_cpm])
+    dbn_rain_springkler_grasswet = pybnl.bn.CustomDiscreteBayesNetwork([df_rain_pm, df_sprinkler_cpm, df_grasswet_cpm])
 
     evidence = dict(grasswet='T', sprinkler='F')
     nodes_to_query = ['rain']

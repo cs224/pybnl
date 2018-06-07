@@ -2,7 +2,8 @@
 import locale
 locale.setlocale(locale.LC_ALL, 'C')
 
-import numpy as np,xarray as xr, pandas as pd
+import numpy as np, xarray as xr, pandas as pd
+import networkx as nx, networkx.algorithms.dag
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
     rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
@@ -20,6 +21,15 @@ utils.chooseCRANmirror(ind=1) # select the first mirror in the list
 grdevices   = rpy2.robjects.packages.importr('grDevices')
 bnlearn     = rpy2.robjects.packages.importr('bnlearn')
 gRain       = rpy2.robjects.packages.importr('gRain')
+
+
+def generate_model_string(target_var, parent_vars):
+    parent_model_string = ':'.join(parent_vars)
+    parent_child_string = '|'.join([target_var, parent_model_string])
+    if len(parent_vars) == 0:
+        parent_child_string = target_var
+    return '[' + parent_child_string + ']'
+
 
 class DiscreteTabularCPM():
 
@@ -98,11 +108,8 @@ class DiscreteTabularCPM():
         self.target = target_var
         parent_vars = list(columns[:-2])
         self.parents = parent_vars
-        parent_model_string = ':'.join(parent_vars)
-        parent_child_string = '|'.join([target_var, parent_model_string])
-        if len(parent_vars) == 0:
-            parent_child_string = target_var
-        self.model_string = '[' + parent_child_string + ']'
+
+        self.model_string = generate_model_string(target_var, parent_vars)
 
     def to_cpm_table(self):
         tmp = self.ldf.pivot_table(index=self.parents,columns=[self.target],values=[self.p_var_name]).reset_index()
@@ -110,7 +117,35 @@ class DiscreteTabularCPM():
         return tmp
 
 
-class DiscreteBayesNetwork():
+class BayesNetworkBase():
+
+    def exact_query(self,evidence, nodes, only_python_result=True):
+        rlistfn = rpy2.robjects.r['list']
+        rsetevidencefn = rpy2.robjects.r['setEvidence']
+        rquerygrainfn = rpy2.robjects.r['querygrain']
+
+        revidence = rlistfn(**evidence)
+        # setEvidence(net1, evidence=list(asia="yes", dysp="yes"))
+        lgrain = rsetevidencefn(self.grain, evidence=revidence)
+        rnodes = rpy2.robjects.StrVector(nodes)
+        # querygrain(jtree, nodes=c("GRASSWET"))#$GRASSWET
+        rresult = rquerygrainfn(lgrain, nodes=rnodes)
+        result_list = []
+        for rr in list(rresult):
+            names = list(rr.names[0])
+            result_list += [dict(zip(names,list(rr)))]
+
+        result = dict(zip(rresult.names, result_list))
+        if only_python_result:
+            return result
+        else:
+            return result, rresult
+
+    def write_net(self, file_name):
+        rwritefn = rpy2.robjects.r['write.net']
+        rwritefn(file_name, self.rfit)
+
+class CustomDiscreteBayesNetwork(BayesNetworkBase):
 
     def __init__(self, ldf_list):
         self.dtcpm_list = [DiscreteTabularCPM(ldf) for ldf in ldf_list]
@@ -144,27 +179,6 @@ class DiscreteBayesNetwork():
         rasgrainfn = rpy2.robjects.r['as.grain']
         self.grain = rcompilefn(rasgrainfn(self.rfit))
 
-    def exact_query(self,evidence, nodes, only_python_result=True):
-        rlistfn = rpy2.robjects.r['list']
-        rsetevidencefn = rpy2.robjects.r['setEvidence']
-        rquerygrainfn = rpy2.robjects.r['querygrain']
-
-        revidence = rlistfn(**evidence)
-        # setEvidence(net1, evidence=list(asia="yes", dysp="yes"))
-        lgrain = rsetevidencefn(self.grain, evidence=revidence)
-        rnodes = rpy2.robjects.StrVector(nodes)
-        # querygrain(jtree, nodes=c("GRASSWET"))#$GRASSWET
-        rresult = rquerygrainfn(lgrain, nodes=rnodes)
-        result_list = []
-        for rr in list(rresult):
-            names = list(rr.names[0])
-            result_list += [dict(zip(names,list(rr)))]
-
-        result = dict(zip(rresult.names, result_list))
-        if only_python_result:
-            return result
-        else:
-            return result, rresult
 
 import tempfile
 
@@ -196,3 +210,39 @@ def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
     return rdf
 
 
+class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
+
+    def __init__(self, dg, ldf):
+        self.dg = dg
+        self.df = ldf
+        self.generate_model_string()
+        self.generate_bnlearn_net()
+        self.generate_fit()
+
+    def generate_model_string_for_node(self, node):
+        target_var = node
+        parent_vars = list(self.dg.predecessors(node))
+        return generate_model_string(target_var, parent_vars)
+
+    def generate_model_string(self):
+        sorted_node_list = list(networkx.algorithms.dag.topological_sort(self.dg))
+        model_string = ''
+        for node in sorted_node_list:
+            model_string += self.generate_model_string_for_node(node)
+
+        self.model_string = model_string
+
+
+    def generate_bnlearn_net(self):
+        model2network = rpy2.robjects.r['model2network']
+        r_model_string = rpy2.robjects.StrVector([self.model_string])
+        self.rnet = model2network(r_model_string)
+
+    def generate_fit(self):
+        rfitfn = rpy2.robjects.r['bn.fit']
+        self.rfit = rfitfn(self.rnet, data=self.df)
+
+        # compile(as.grain(dfit))
+        rcompilefn = rpy2.robjects.r['compile']
+        rasgrainfn = rpy2.robjects.r['as.grain']
+        self.grain = rcompilefn(rasgrainfn(self.rfit))
