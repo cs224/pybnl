@@ -246,3 +246,34 @@ class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
         rcompilefn = rpy2.robjects.r['compile']
         rasgrainfn = rpy2.robjects.r['as.grain']
         self.grain = rcompilefn(rasgrainfn(self.rfit))
+
+def convert_to_xarray(rfit):
+    rnodesfn = rpy2.robjects.r['nodes']
+    nodes = list(rnodesfn(rfit))
+
+    ds = xr.Dataset()
+    for node in nodes:
+        print(node)
+        # rpy2.robjects.pandas2ri.ri2py()
+        prob = rfit.rx(node)[0].rx('prob')[0]
+        # print(prob)
+        dims = prob.names # map from dim to levels
+        # print(dims)
+        coords = {}
+        dim_names = []
+        if len(dims) == 1:
+            dname = node
+            dim_names += [dname]
+            levels = list(dims[0])
+            coords.update({dname: levels})
+        else:
+            for dname in dims.names:
+                dim_names += [dname]
+                levels = list(dims.rx(dname)[0])
+                coords.update({dname: levels})
+        values = rpy2.robjects.pandas2ri.ri2py(prob)
+
+        ar = xr.DataArray(values, dims = dim_names, coords= coords)
+        ds['cpt' + node] = ar
+
+    return ds
