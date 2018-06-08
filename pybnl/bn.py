@@ -247,13 +247,31 @@ class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
         rasgrainfn = rpy2.robjects.r['as.grain']
         self.grain = rcompilefn(rasgrainfn(self.rfit))
 
+def convert_xarray_to_pandas(ds):
+
+    rpd = {}
+    for ar_name in ds.data_vars: # .keys()
+        ar = ds[ar_name]
+        dims = ar.dims
+        new_dims = dims[1:] + dims[:1]
+        ar = ar.transpose(*new_dims)
+        stacked_ar = ar.stack(idx=new_dims)
+
+        ldf =  stacked_ar.to_pandas().reset_index()
+        old_columns = list(ldf.columns)
+        new_columns = old_columns[:-1] + ['p']
+        # print(old_columns, new_columns)
+        ldf.columns = new_columns
+        rpd[ar_name] = ldf
+
+    return rpd
+
 def convert_to_xarray(rfit):
     rnodesfn = rpy2.robjects.r['nodes']
     nodes = list(rnodesfn(rfit))
 
     ds = xr.Dataset()
     for node in nodes:
-        print(node)
         # rpy2.robjects.pandas2ri.ri2py()
         prob = rfit.rx(node)[0].rx('prob')[0]
         # print(prob)
@@ -276,4 +294,33 @@ def convert_to_xarray(rfit):
         ar = xr.DataArray(values, dims = dim_names, coords= coords)
         ds['cpt' + node] = ar
 
-    return ds
+    lpd = convert_xarray_to_pandas(ds)
+
+    did_adapt_ds_p = False
+    for df_name in lpd.keys():
+        ldf = lpd[df_name]
+        null_index_combinations = ldf[pd.isnull(ldf['p'])][ldf.columns[:-2]]
+
+        if len(null_index_combinations) == 0:
+            continue
+        null_index_combinations = null_index_combinations.drop_duplicates()
+        did_adapt_ds_p = True
+        lar = ds[df_name]
+        target_var = lar.dims[0]
+        target_var_levels = lar.coords[target_var]
+        target_var_level_count = len(target_var_levels)
+        fill_in_p = 1.0/target_var_level_count
+        for index, row in null_index_combinations.iterrows():
+            # print('row', row)
+            dims = list(row.index)
+            dim_values = row.values
+            # print('dims,dim_values',dims,dim_values)
+            coords = dict(zip(dims, dim_values))
+            # print('coords',coords)
+            # print('lar',lar)
+            lar.loc[coords] = fill_in_p
+
+    if did_adapt_ds_p:
+        lpd = convert_xarray_to_pandas(ds)
+
+    return ds, lpd
