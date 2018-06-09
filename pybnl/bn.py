@@ -33,9 +33,14 @@ def generate_model_string(target_var, parent_vars):
 
 class DiscreteTabularCPM():
 
-    def __init__(self, ldf, transform=True):
+    def __init__(self, ldf, lcpm_xr=None, transform=True):
         self.transform = transform
         self.ldf = ldf
+
+        self.lcpm_xr  = lcpm_xr
+        if self.lcpm_xr is not None:
+            self.ldf = convert_xarray_array_to_pandas_dtcpm(lcpm_xr)
+
         self.cpt_to_r()
         self.cpt_to_model_string()
 
@@ -43,42 +48,24 @@ class DiscreteTabularCPM():
         self.lcpm_xr = xrin
         self.nparray = np.array(xrin)
 
-    def extract_xarray_and_nparray_transform0(self, xrin):
-        tmp0 = xrin
-        old_order = tmp0.dims
-        new_order = old_order[-1:] + old_order[:-1]
-        # tmp = np.reshape(tmp0.values.reshape(-1),tmp0.values.shape,order='F')
-        # lcpm_xr = xr.DataArray(tmp,dims = tmp0.dims, coords= tmp0.coords)
-        lcpm_xr = tmp0.transpose(*new_order)  #lcpm_xds[var_name]
-
-        self.lcpm_xr = lcpm_xr
-
-        # the array itself:
-        nparray0 = np.array(lcpm_xr)
-        # old_order = list(range(len(nparray0.shape)))
-        # new_order = old_order[-1:] + old_order[:-1]
-        # nparray1 = nparray0.transpose(new_order)
-
-        nparray = np.reshape(nparray0.reshape(-1),nparray0.shape,order='F')
-        self.nparray = nparray
-
-    def extract_xarray_and_nparray_transform1(self, xrin):
+    def extract_xarray_and_nparray_transform(self, xrin):
         tmp0 = xrin
         old_order = tmp0.dims
         new_order = old_order[-1:] + old_order[:-1]
         lcpm_xr = tmp0.transpose(*new_order)  #lcpm_xds[var_name]
 
         self.lcpm_xr = lcpm_xr
-        self.nparray = np.array(lcpm_xr)
 
     def cpt_to_r(self):
-        lcpm_ds = self.ldf.groupby(list(self.ldf.columns[:-1])).max()  # .to_xarray().p.values
-        lcpm_xds = lcpm_ds.to_xarray()
-        var_name = list(lcpm_xds.data_vars.keys())[0]
-        if self.transform:
-            self.extract_xarray_and_nparray_transform1(lcpm_xds[var_name])
-        else:
-            self.extract_xarray_and_nparray_no_transform(lcpm_xds[var_name])
+        if self.lcpm_xr is None:
+            lcpm_ds = self.ldf.groupby(list(self.ldf.columns[:-1])).max()  # .to_xarray().p.values
+            lcpm_xds = lcpm_ds.to_xarray()
+            var_name = list(lcpm_xds.data_vars.keys())[0]
+            if self.transform:
+                self.extract_xarray_and_nparray_transform(lcpm_xds[var_name])
+            else:
+                self.extract_xarray_and_nparray_no_transform(lcpm_xds[var_name])
+        self.nparray = np.array(self.lcpm_xr)
 
         # the dim shape
         dim_shape = self.nparray.shape
@@ -141,14 +128,29 @@ class BayesNetworkBase():
         else:
             return result, rresult
 
+    def to_xrds(self):
+        xrds,_ = convert_to_xarray_dataset(self.rfit)
+        return xrds
+
+    def to_dtcpm_dict(self):
+        _,dtcpm_dict = convert_to_xarray_dataset(self.rfit)
+        return dtcpm_dict
+
     def write_net(self, file_name):
         rwritefn = rpy2.robjects.r['write.net']
         rwritefn(file_name, self.rfit)
 
+    def write_netcdf(self, file_name):
+        xrds = self.to_xrds()
+        xrds.to_netcdf(file_name)
+
 class CustomDiscreteBayesNetwork(BayesNetworkBase):
 
-    def __init__(self, ldf_list):
-        self.dtcpm_list = [DiscreteTabularCPM(ldf) for ldf in ldf_list]
+    def __init__(self, ldf_list, xrds=None):
+        if xrds is not None:
+            self.dtcpm_list = [DiscreteTabularCPM(None, lcpm_xr=xrds[lcpm_xr_var]) for lcpm_xr_var in xrds.data_vars]
+        else:
+            self.dtcpm_list = [DiscreteTabularCPM(ldf) for ldf in ldf_list]
         self.generate_model_string()
         self.generate_bnlearn_net()
         self.generate_custom_fit()
@@ -247,26 +249,34 @@ class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
         rasgrainfn = rpy2.robjects.r['as.grain']
         self.grain = rcompilefn(rasgrainfn(self.rfit))
 
-def convert_xarray_to_pandas(ds):
+def convert_xarray_array_to_pandas_dtcpm(ar):
+    dims = ar.dims
+    new_dims = dims[1:] + dims[:1]
+    ar = ar.transpose(*new_dims)
+    stacked_ar = ar.stack(idx=new_dims)
 
+    ldf = stacked_ar.to_pandas().reset_index()
+    old_columns = list(ldf.columns)
+    new_columns = old_columns[:-1] + ['p']
+    # print(old_columns, new_columns)
+    ldf.columns = new_columns
+
+    return ldf
+
+def convert_pandas_dtcpm_to_xarray(ldf):
+    dtcpm = DiscreteTabularCPM(ldf)
+    return dtcpm.lcpm_xr
+
+def convert_xarray_dataset_to_pandas_dtcpm_dict(ds):
     rpd = {}
     for ar_name in ds.data_vars: # .keys()
         ar = ds[ar_name]
-        dims = ar.dims
-        new_dims = dims[1:] + dims[:1]
-        ar = ar.transpose(*new_dims)
-        stacked_ar = ar.stack(idx=new_dims)
-
-        ldf =  stacked_ar.to_pandas().reset_index()
-        old_columns = list(ldf.columns)
-        new_columns = old_columns[:-1] + ['p']
-        # print(old_columns, new_columns)
-        ldf.columns = new_columns
+        ldf = convert_xarray_array_to_pandas_dtcpm(ar)
         rpd[ar_name] = ldf
 
     return rpd
 
-def convert_to_xarray(rfit):
+def convert_to_xarray_dataset(rfit):
     rnodesfn = rpy2.robjects.r['nodes']
     nodes = list(rnodesfn(rfit))
 
@@ -294,7 +304,7 @@ def convert_to_xarray(rfit):
         ar = xr.DataArray(values, dims = dim_names, coords= coords)
         ds['cpt' + node] = ar
 
-    lpd = convert_xarray_to_pandas(ds)
+    lpd = convert_xarray_dataset_to_pandas_dtcpm_dict(ds)
 
     did_adapt_ds_p = False
     for df_name in lpd.keys():
@@ -321,6 +331,15 @@ def convert_to_xarray(rfit):
             lar.loc[coords] = fill_in_p
 
     if did_adapt_ds_p:
-        lpd = convert_xarray_to_pandas(ds)
+        lpd = convert_xarray_dataset_to_pandas_dtcpm_dict(ds)
 
     return ds, lpd
+
+def bnnet_from_pandas_dtcpm_list(dtcpm_list):
+    return CustomDiscreteBayesNetwork(dtcpm_list)
+
+def bnnet_from_netcdf_file(netcdf_file_name):
+    xrds = xr.open_dataset(netcdf_file_name, autoclose=True)
+    print(xrds)
+    return CustomDiscreteBayesNetwork(None, xrds=xrds)
+

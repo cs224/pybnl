@@ -64,3 +64,4 @@ target/
 
 # pytest
 .pytest_cache
+.directory
