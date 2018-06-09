@@ -3,7 +3,8 @@ import locale
 locale.setlocale(locale.LC_ALL, 'C')
 
 import numpy as np, xarray as xr, pandas as pd
-import networkx as nx, networkx.algorithms.dag
+import networkx as nx, networkx.algorithms.dag, graphviz
+import itertools, collections
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
     rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
@@ -343,3 +344,96 @@ def bnnet_from_netcdf_file(netcdf_file_name):
     print(xrds)
     return CustomDiscreteBayesNetwork(None, xrds=xrds)
 
+def pairwise(iterable):
+    a, b = itertools.tee(iterable)
+    next(b, None)
+    return list(zip(a, b))
+
+def grouped(iterable, n):
+    "s -> (s0,s1,s2,...sn-1), (sn,sn+1,sn+2,...s2n-1), (s2n,s2n+1,s2n+2,...s3n-1), ..."
+    return list(zip(*[iter(iterable)]*n))
+
+
+def cpdag(bn):
+    rnet = rfit2rnet(bn.rfit)
+    return rnet2cpdag(rnet)
+
+def rnet2cpdag(rnet):
+    nodes, unidirectional_edges, bidirectional_edges = rnet2dag(rnet)
+
+    rcpdagfn = rpy2.robjects.r('cpdag')
+    rarcsfn  = rpy2.robjects.r('arcs')
+    rnodesfn  = rpy2.robjects.r('nodes')
+    tmp = rarcsfn(rcpdagfn(rnet))
+
+    frm = list(tmp.rx(True,'from'))
+    to  = list(tmp.rx(True,'to'))
+
+    r1 = set(zip(frm,to))
+    r2 = set(zip(to, frm))
+    bde = r1 & r2
+
+    bidirectional_edges = set(unidirectional_edges) & bde
+    unidirectional_edges = set(unidirectional_edges) - bidirectional_edges
+
+    nodes = list(rnodesfn(rnet))
+
+    return nodes, unidirectional_edges, bidirectional_edges
+
+def dag(bn):
+    rnet = rfit2rnet(bn.rfit)
+    return rnet2dag(rnet)
+
+
+def rnet2dag(rnet):
+    rarcsfn    = rpy2.robjects.r('arcs')
+    rcextendfn = rpy2.robjects.r('cextend')
+    rnodesfn  = rpy2.robjects.r('nodes')
+
+    tmp = rarcsfn(rcextendfn(rnet))
+
+    frm = list(tmp.rx(True,'from'))
+    to  = list(tmp.rx(True,'to'))
+
+    unidirectional_edges = list(zip(frm,to))
+
+    nodes = list(rnodesfn(rnet))
+
+    return nodes, unidirectional_edges, []
+
+def vstructs(bn):
+    rvstructsfn  = rpy2.robjects.r('vstructs')
+    rvstructs = rvstructsfn(bn.rfit)
+    print(rvstructs)
+    x = list(rvstructs.rx(True, 'X'))
+    z = list(rvstructs.rx(True, 'Z'))
+    y = list(rvstructs.rx(True, 'Y'))
+    return pd.DataFrame(collections.OrderedDict(X=x,Z=z,Y=y))
+
+
+def score(bn, ldf, type='loglik'):
+    rscorefn  = rpy2.robjects.r('score')
+    return rscorefn(bn.rnet, data=ldf, type=type)[0]
+
+def rfit2rnet(rfit):
+    rbnnetfn = rpy2.robjects.r('bn.net')
+    return rbnnetfn(rfit)
+
+def drop_arc(rnet, frm, to):
+    rdroparcfn  = rpy2.robjects.r('drop.arc')
+    return rdroparcfn(rnet, **{'from': frm, 'to': to})
+
+
+def dot(nodes, unidirectional_edges, bidirectional_edges, engine='fdp', graph_name='graph'):
+    dg_dot = graphviz.Digraph(engine=engine, comment=graph_name)
+
+    for node in nodes:
+        dg_dot.node(node)
+
+    for edge in unidirectional_edges:
+        dg_dot.edge(edge[0], edge[1])
+
+    for edge in bidirectional_edges:
+        dg_dot.edge(edge[0], edge[1], dir='none')
+
+    return dg_dot
