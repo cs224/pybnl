@@ -348,7 +348,7 @@ def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart
         start = rrandomgraphfn(rnamesfn(rdf))
     else:
         start = rpy2.rinterface.NULL
-    return rhcfn(rpy2.robjects.pandas2ri.py2ri(ldf), score=score, iss=iss, restart=restart, perturb=perturb, start=start)
+    return rhcfn(rdf, score=score, iss=iss, restart=restart, perturb=perturb, start=start)
 
 
 class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
@@ -368,6 +368,47 @@ class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
 # http://www.bnlearn.com/documentation/man/hybrid.html
 # rsmax2(rdf_lt, restrict = "si.hiton.pc", restrict.args = list(test = "x2", alpha = 0.01), maximize = "tabu", maximize.args = list(score = "bic", tabu = 10))
+# rsmax2(rdf_lt, restrict = "mmpc", maximize = "hc")
+# mmhc(rdf_lt)
+
+def dict2rlist(d):
+    rlistfn = rpy2.robjects.r['list']
+    return rlistfn(**d)
+
+
+def hybrid_structure_learning_mmhc(ldf):
+    rdf = rpy2.robjects.pandas2ri.py2ri(ldf)
+    rmmhcfn = rpy2.robjects.r['mmhc']
+    return rmmhcfn(rdf)
+
+def hybrid_structure_learning_rxmax2_sihitonpc_tabu(ldf):
+    rdf = rpy2.robjects.pandas2ri.py2ri(ldf)
+    rrsmax2fn = rpy2.robjects.r['rsmax2']
+    restrict_args = {'restrict.args': dict2rlist(dict(test = "x2", alpha = 0.01))}
+    maximize_args = {'maximize_args': dict2rlist(dict(score = "bic", tabu = 10))}
+    args = {**restrict_args, **maximize_args}
+    return rrsmax2fn(rdf,
+                     restrict = "si.hiton.pc",
+                     maximize = "tabu",
+                     **args)
+
+
+class HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
+
+    def __init__(self, ldf, algorithm='mmhc'):
+        super(HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+        self.algorithmfn = None
+        if algorithm == 'mmhc':
+            self.algorithmfn = lambda ldf: hybrid_structure_learning_mmhc(ldf)
+        if algorithm == 'rxmax2_sihitonpc_tabu':
+            self.algorithmfn = lambda ldf: hybrid_structure_learning_rxmax2_sihitonpc_tabu(ldf)
+
+    def fit(self, X=None, y=None):
+        self.rnet = self.algorithmfn(self.df)
+        self.rnet = rnet2dagrnet(self.rnet)
+        self.generate_fit()
+        return self
+
 
 def convert_xarray_array_to_pandas_dtcpm(ar):
     dims = ar.dims
