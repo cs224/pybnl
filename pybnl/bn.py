@@ -4,7 +4,9 @@ locale.setlocale(locale.LC_ALL, 'C')
 
 import numpy as np, xarray as xr, pandas as pd
 import networkx as nx, networkx.algorithms.dag, graphviz
-import itertools, collections
+import sklearn.base
+import itertools, collections, tempfile
+
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
     rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
@@ -105,7 +107,49 @@ class DiscreteTabularCPM():
         return tmp
 
 
+class BayesNetworkStructure():
+    def __init__(self, rnet):
+        self.rnet     = rnet
+        self.dag()
+
+    def dag(self):
+        # nodes, unidirectional_edges, bidirectional_edges = dag(self.rnet)
+        self.rnet = rnet2dagrnet(self.rnet)
+        self.directed = True
+        return self
+
+    def cpdag(self):
+        self.rnet = rnet2cpdagrnet(self.rnet)
+        self.directed = False
+        return self
+
+    def dot(self, engine='fdp'):
+        if self.directed:
+            return dot(*rnet2dag(self.rnet), engine=engine)
+        else:
+            return dot(*rnet2cpdag(self.rnet), engine=engine)
+
+    def score(self, ldf):
+        return score(self.rnet, ldf)
+
+    def vstructs(self):
+        return vstructs(self.rnet)
+
+    def drop_arc(self, frm, to, inplace=False):
+        rnet = drop_arc(self.rnet, frm=frm, to=to)
+        if not inplace:
+            return BayesNetworkStructure(rnet)
+        self.rnet = rnet
+        return self
+
+
 class BayesNetworkBase():
+
+    def __init__(self):
+        self.df    = None
+        self.rnet  = None
+        self.rfit  = None
+        self.grain = None
 
     def exact_query(self,evidence, nodes, only_python_result=True):
         rlistfn = rpy2.robjects.r['list']
@@ -145,6 +189,9 @@ class BayesNetworkBase():
         xrds = self.to_xrds()
         xrds.to_netcdf(file_name)
 
+    def structure(self):
+        return BayesNetworkStructure(self.rnet)
+
 class CustomDiscreteBayesNetwork(BayesNetworkBase):
 
     def __init__(self, ldf_list, xrds=None):
@@ -183,8 +230,6 @@ class CustomDiscreteBayesNetwork(BayesNetworkBase):
         self.grain = rcompilefn(rasgrainfn(self.rfit))
 
 
-import tempfile
-
 # https://realpython.com/instance-class-and-static-methods-demystified/
 # https://pandas.pydata.org/pandas-docs/stable/categorical.html
 
@@ -211,6 +256,26 @@ def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
     rpy2.robjects.globalenv[tmp_var_name_out] = np.nan
 
     return rdf
+
+
+class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+    def __init__(self, ldf):
+        self.df = ldf
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return X
+
+    def generate_fit(self):
+        rfitfn = rpy2.robjects.r['bn.fit']
+        self.rfit = rfitfn(self.rnet, data=self.df)
+
+        # compile(as.grain(dfit))
+        rcompilefn = rpy2.robjects.r['compile']
+        rasgrainfn = rpy2.robjects.r['as.grain']
+        self.grain = rcompilefn(rasgrainfn(self.rfit))
 
 
 class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
@@ -249,6 +314,60 @@ class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
         rcompilefn = rpy2.robjects.r['compile']
         rasgrainfn = rpy2.robjects.r['as.grain']
         self.grain = rcompilefn(rasgrainfn(self.rfit))
+
+
+# mc-mi: monte-carlo mutual information
+def constrained_base_structure_learning_si_hiton_pc(ldf, test="mc-mi", undirected=False):
+    rhitonpcfn = rpy2.robjects.r['si.hiton.pc']
+    return rhitonpcfn(rpy2.robjects.pandas2ri.py2ri(ldf), test=test, undirected=undirected)
+
+# http://www.bnlearn.com/documentation/man/constraint.html
+# si.hiton.pc(x, cluster = NULL, whitelist = NULL, blacklist = NULL, test = NULL, alpha = 0.05, B = NULL, max.sx = NULL, debug = FALSE, optimized = FALSE, strict = FALSE, undirected = TRUE)
+class ConstraintBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
+
+    def __init__(self, ldf, algorithm='HITON-PC'):
+        super(ConstraintBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+        self.algorithmfn = None
+        if algorithm == 'HITON-PC':
+            self.algorithmfn = lambda ldf: constrained_base_structure_learning_si_hiton_pc(ldf)
+
+    def fit(self, X=None, y=None):
+        self.rnet = self.algorithmfn(self.df)
+        self.rnet = rnet2dagrnet(self.rnet)
+        self.generate_fit()
+        return self
+
+# http://www.bnlearn.com/documentation/man/hc.html
+# hc(rdf_lt, score = "bic", iss=1, restart = 10, perturb = 5, start = random.graph(names(rdf_lt)))
+def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart=10, perturb=5, start='random_graph'):
+    rdf = rpy2.robjects.pandas2ri.py2ri(ldf)
+    rhcfn = rpy2.robjects.r['hc']
+    if start == 'random_graph':
+        rrandomgraphfn = rpy2.robjects.r['random.graph']
+        rnamesfn = rpy2.robjects.r['names']
+        start = rrandomgraphfn(rnamesfn(rdf))
+    else:
+        start = rpy2.rinterface.NULL
+    return rhcfn(rpy2.robjects.pandas2ri.py2ri(ldf), score=score, iss=iss, restart=restart, perturb=perturb, start=start)
+
+
+class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
+
+    def __init__(self, ldf, algorithm='hc'):
+        super(ScoreBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+        self.algorithmfn = None
+        if algorithm == 'hc':
+            self.algorithmfn = lambda ldf: score_base_structure_learning_hill_climbing(ldf)
+
+    def fit(self, X=None, y=None):
+        self.rnet = self.algorithmfn(self.df)
+        self.rnet = rnet2dagrnet(self.rnet)
+        self.generate_fit()
+        return self
+
+
+# http://www.bnlearn.com/documentation/man/hybrid.html
+# rsmax2(rdf_lt, restrict = "si.hiton.pc", restrict.args = list(test = "x2", alpha = 0.01), maximize = "tabu", maximize.args = list(score = "bic", tabu = 10))
 
 def convert_xarray_array_to_pandas_dtcpm(ar):
     dims = ar.dims
@@ -358,6 +477,10 @@ def cpdag(bn):
     rnet = rfit2rnet(bn.rfit)
     return rnet2cpdag(rnet)
 
+def rnet2cpdagrnet(rnet):
+    rcpdagfn = rpy2.robjects.r('cpdag')
+    return rcpdagfn(rnet)
+
 def rnet2cpdag(rnet):
     nodes, unidirectional_edges, bidirectional_edges = rnet2dag(rnet)
 
@@ -384,6 +507,9 @@ def dag(bn):
     rnet = rfit2rnet(bn.rfit)
     return rnet2dag(rnet)
 
+def rnet2dagrnet(rnet):
+    rcextendfn = rpy2.robjects.r('cextend')
+    return rcextendfn(rnet)
 
 def rnet2dag(rnet):
     rarcsfn    = rpy2.robjects.r('arcs')
@@ -403,8 +529,8 @@ def rnet2dag(rnet):
 
 def vstructs(bn):
     rvstructsfn  = rpy2.robjects.r('vstructs')
-    rvstructs = rvstructsfn(bn.rfit)
-    print(rvstructs)
+    rvstructs = rvstructsfn(bn) # bn.rfit
+    # print(rvstructs)
     x = list(rvstructs.rx(True, 'X'))
     z = list(rvstructs.rx(True, 'Z'))
     y = list(rvstructs.rx(True, 'Y'))
