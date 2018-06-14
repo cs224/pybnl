@@ -5,7 +5,7 @@ locale.setlocale(locale.LC_ALL, 'C')
 import numpy as np, xarray as xr, pandas as pd
 import networkx as nx, networkx.algorithms.dag, graphviz
 import sklearn.base
-import itertools, collections, tempfile
+import itertools, collections, tempfile, random
 
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
@@ -233,6 +233,23 @@ class CustomDiscreteBayesNetwork(BayesNetworkBase):
 # https://realpython.com/instance-class-and-static-methods-demystified/
 # https://pandas.pydata.org/pandas-docs/stable/categorical.html
 
+def pydf_to_factorrdf(ldf):
+    r_df = rpy2.robjects.pandas2ri.py2ri(ldf)
+
+    colnames = list(r_df.colnames)
+    for colname in colnames:
+        cat_type = ldf[colname].dtype
+        levels = rpy2.robjects.StrVector(list(cat_type.categories))
+        ordered = cat_type.ordered
+
+        idx = colnames.index(colname)
+        factorized_column =  rpy2.robjects.vectors.FactorVector(r_df.rx2(colname), levels=levels, ordered=ordered)
+        r_df[idx] = factorized_column
+
+    return r_df
+
+
+
 def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
     tmp_var_name_in  = next(tempfile._get_candidate_names())
     tmp_var_name_out = next(tempfile._get_candidate_names())
@@ -247,19 +264,24 @@ def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
 
     columns = rdf.columns
     for i, column in enumerate(columns):
-        print((i,column))
+        # print((i,column))
         levels = rlevels(rdf_[i])
-        print(levels)
+        # print(levels)
         rdf[column] = pd.Categorical(rdf[column], categories=levels, ordered=True)
 
-    rpy2.robjects.globalenv[tmp_var_name_in]  = np.nan
-    rpy2.robjects.globalenv[tmp_var_name_out] = np.nan
+    rpy2.robjects.globalenv[tmp_var_name_in]  = rpy2.rinterface.NULL
+    rpy2.robjects.globalenv[tmp_var_name_out] = rpy2.rinterface.NULL
 
     return rdf
 
+def check_dtype_categorical(ldf):
+    for column in ldf.columns:
+        if ldf[column].dtype.name != 'category':
+            raise ValueError('Dataframe needs to contain only categorical data columns!')
 
 class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
     def __init__(self, ldf):
+        check_dtype_categorical(ldf)
         self.df = ldf
 
     def fit(self, X, y=None):
@@ -270,7 +292,7 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
 
     def generate_fit(self):
         rfitfn = rpy2.robjects.r['bn.fit']
-        self.rfit = rfitfn(self.rnet, data=self.df)
+        self.rfit = rfitfn(self.rnet, data=pydf_to_factorrdf(self.df))
 
         # compile(as.grain(dfit))
         rcompilefn = rpy2.robjects.r['compile']
@@ -278,14 +300,26 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
         self.grain = rcompilefn(rasgrainfn(self.rfit))
 
 
-class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
+class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, dg, ldf):
+    def __init__(self, ldf, dg=None, model_string=None, rnet=None):
+        super(NetAndDataDiscreteBayesNetwork, self).__init__(ldf)
         self.dg = dg
-        self.df = ldf
-        self.generate_model_string()
-        self.generate_bnlearn_net()
-        self.generate_fit()
+        self.model_string = model_string
+        self.rnet = rnet
+        if dg is not None:
+            self.generate_model_string()
+            self.generate_bnlearn_net()
+            return
+
+        if model_string is not None:
+            self.generate_bnlearn_net()
+            return
+
+        if rnet is not None:
+            return
+
+        raise ValueError('Exactly one of dg, model_string or rnet need to be supplied')
 
     def generate_model_string_for_node(self, node):
         target_var = node
@@ -300,20 +334,14 @@ class NetAndDataDiscreteBayesNetwork(BayesNetworkBase):
 
         self.model_string = model_string
 
-
     def generate_bnlearn_net(self):
         model2network = rpy2.robjects.r['model2network']
         r_model_string = rpy2.robjects.StrVector([self.model_string])
         self.rnet = model2network(r_model_string)
 
-    def generate_fit(self):
-        rfitfn = rpy2.robjects.r['bn.fit']
-        self.rfit = rfitfn(self.rnet, data=self.df)
-
-        # compile(as.grain(dfit))
-        rcompilefn = rpy2.robjects.r['compile']
-        rasgrainfn = rpy2.robjects.r['as.grain']
-        self.grain = rcompilefn(rasgrainfn(self.rfit))
+    def fit(self, X=None, y=None):
+        self.generate_fit()
+        return self
 
 
 # mc-mi: monte-carlo mutual information
@@ -366,10 +394,85 @@ class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         return self
 
 
+class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
+
+    def __init__(self, ldf):
+        super(StructuralEMNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+        self.latent_names = identify_latent_variables(self.df)
+        if len(self.latent_names) == 0:
+            raise ValueError('Expecting a dataframe with some latent variables, but does not contain any!')
+        self.latent_levels = dict()
+        for ln in self.latent_names:
+            levels = levels_of_latent_variable(self.df, ln)
+            self.latent_levels[ln] = levels
+
+    # https://docs.python.org/3/library/random.html
+    # random.choices(): with replacement
+    # random.sample(): without replacement
+    def fit(self, X=None, y=None):
+        imputed = self.df.copy()
+        k = len(self.df)
+        for ln in self.latent_names:
+            levels = self.latent_levels[ln]
+            imputed.loc[:,ln] = random.choices(levels,k=k)
+            imputed[ln] = imputed[ln].astype(self.df[ln].dtype)
+
+        print(imputed.columns)
+        # fitted = bn.fit(empty.graph(names(ldmarks)), imputed)
+        f = NetAndDataDiscreteBayesNetwork(imputed, rnet=empty_graph(imputed.columns))
+        f.fit()
+
+        # fitted$LAT = array(c(0.5, 0.5), dim = 2, dimnames = list(c("A", "B")))
+        for ln in self.latent_names:
+            levels = self.latent_levels[ln]
+            count = len(levels)
+            a = np.full([count], float(1/count))
+            dimnames = rpy2.robjects.r['list'](rpy2.robjects.StrVector(levels))
+            ra = rpy2.robjects.r['array'](a, dim=count,dimnames=dimnames)
+            idx = list(imputed.columns).index(ln)
+            prob_idx = list(f.rfit[idx].names).index('prob')
+            f.rfit[idx][prob_idx] = ra
+
+        return f
+
+
 # http://www.bnlearn.com/documentation/man/hybrid.html
 # rsmax2(rdf_lt, restrict = "si.hiton.pc", restrict.args = list(test = "x2", alpha = 0.01), maximize = "tabu", maximize.args = list(score = "bic", tabu = 10))
 # rsmax2(rdf_lt, restrict = "mmpc", maximize = "hc")
 # mmhc(rdf_lt)
+
+def empty_graph(node_names):
+    node_names = list(node_names)
+    node_names = rpy2.robjects.StrVector(node_names)
+    remptygraphfn = rpy2.robjects.r['empty.graph']
+    return remptygraphfn(node_names)
+
+def identify_latent_variables(ldf):
+    r = []
+    for column in ldf.columns:
+        lds = ldf[column]
+
+        if lds.isnull().all():
+            r += [column]
+
+    return r
+
+def levels_of_latent_variable(ldf, column):
+    lds = ldf[column]
+    # hasattr(pd.Series(['a'], dtype='category'), 'cat')
+    if lds.dtype.name != 'category':
+        raise ValueError('column name {} is not of type category!'.format(column))
+    return list(lds.cat.categories)
+
+def augment_df_with_latent_variable(ldf, latent_variable_name, levels):
+    l = len(ldf)
+    lds = pd.Series(np.full([l], np.nan))
+    slevels = ['l{0:0>3}'.format(i) for i in range(levels)]
+    lds_ct = pd.api.types.CategoricalDtype(slevels, ordered=True)
+    lds = lds.astype(lds_ct)
+    ldf[latent_variable_name] = lds
+    return ldf
+
 
 def dict2rlist(d):
     rlistfn = rpy2.robjects.r['list']
