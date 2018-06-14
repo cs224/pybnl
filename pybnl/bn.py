@@ -10,7 +10,7 @@ import itertools, collections, tempfile, random
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
     rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
-    rpy2.interactive, rpy2.robjects.lib.grdevices
+    rpy2.interactive, rpy2.robjects.lib.grdevices, rpy2.rlike.container
 # rpy2.interactive.process_revents.start()
 rpy2.robjects.pandas2ri.activate()
 
@@ -232,22 +232,52 @@ class CustomDiscreteBayesNetwork(BayesNetworkBase):
 
 # https://realpython.com/instance-class-and-static-methods-demystified/
 # https://pandas.pydata.org/pandas-docs/stable/categorical.html
+# https://rpy2.github.io/doc/v2.9.x/html/vector.html#dataframe
 
 def pydf_to_factorrdf(ldf):
-    r_df = rpy2.robjects.pandas2ri.py2ri(ldf)
+    check_dtype_categorical(ldf)
+    latent = identify_latent_variables(ldf)
+    NA_lds = None
+    if len(latent) > 0:
+        NA_lds = lds = [rpy2.rinterface.NA_Character for _ in range(len(ldf))]
+    # r_df = rpy2.robjects.pandas2ri.py2ri(ldf)
+    # rpy2.rlike.container.OrdDict([('value', robjects.IntVector((1,2,3))), ('letter', robjects.StrVector(('x', 'y', 'z')))])
+    # dataf = robjects.DataFrame(od)
 
-    colnames = list(r_df.colnames)
+    cols = []
+    colnames = list(ldf.columns)
     for colname in colnames:
         cat_type = ldf[colname].dtype
         levels = rpy2.robjects.StrVector(list(cat_type.categories))
         ordered = cat_type.ordered
 
-        idx = colnames.index(colname)
-        factorized_column =  rpy2.robjects.vectors.FactorVector(r_df.rx2(colname), levels=levels, ordered=ordered)
-        r_df[idx] = factorized_column
+        lds = ldf[colname]
+        if colname in latent:
+            factorized_column =  rpy2.robjects.vectors.FactorVector(rpy2.robjects.StrVector(NA_lds), levels=levels, ordered=ordered)
+        else:
+            factorized_column =  rpy2.robjects.vectors.FactorVector(rpy2.robjects.StrVector(lds), levels=levels, ordered=ordered)
+        cols += [factorized_column]
+
+    od = rpy2.rlike.container.OrdDict([(colnames[i], col) for i,col in enumerate(cols)])
+    r_df = rpy2.robjects.DataFrame(od)
 
     return r_df
 
+def factorrdf_to_pydf(r_df):
+    colnames = list(r_df.colnames)
+    ldf = pd.DataFrame(columns=colnames)# rpy2.robjects.pandas2ri.ri2py(r_df)
+    for i, colname in enumerate(colnames):
+        levels = list(r_df[i].levels)
+        ordered = r_df[i].isordered
+        cdt = pd.api.types.CategoricalDtype(levels, ordered=ordered)
+
+        all_values_na = rpy2.robjects.r('all')(rpy2.robjects.r('is.na')(r_df[i]))[0]
+        if all_values_na:
+            ldf[colname] = pd.Series(np.nan).astype(cdt)
+        else:
+            ldf[colname] = pd.Series(r_df[i].iter_labels()).astype(cdt)
+
+    return ldf
 
 
 def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
@@ -276,8 +306,8 @@ def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
 
 def check_dtype_categorical(ldf):
     for column in ldf.columns:
-        if ldf[column].dtype.name != 'category':
-            raise ValueError('Dataframe needs to contain only categorical data columns!')
+        if ldf[column].dtype.name != 'category' or not all(isinstance(item, str) for item in list(ldf[column].dtype.categories)):
+            raise ValueError('Dataframe needs to contain only categorical data columns and the categories have to be string values!')
 
 class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
     def __init__(self, ldf):
@@ -433,6 +463,27 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
             prob_idx = list(f.rfit[idx].names).index('prob')
             f.rfit[idx][prob_idx] = ra
 
+        # for (i in 1:15) {
+        #     # expectation step.
+        #     imputed = impute(fitted, ldmarks, method = "bayes-lw")
+        #     # maximisation step (forcing LAT to be connected to the other nodes).
+        #     dag = hc(imputed, whitelist = data.frame(from = "LAT", to = names(dmarks2)))
+        #     fitted.new = bn.fit(dag, imputed, method = "bayes")
+        #
+        #
+        #     if (isTRUE(all.equal(fitted, fitted.new))) {
+        #       print(c("i: ", i))
+        #       break
+        #     } else {
+        #       fitted = fitted.new
+        #     }
+        # }#FOR
+        # print(score(dag,data=imputed,type="bic"))
+        # modelstring(fitted)
+
+        # for i in range(15):
+
+
         return f
 
 
@@ -440,6 +491,9 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 # rsmax2(rdf_lt, restrict = "si.hiton.pc", restrict.args = list(test = "x2", alpha = 0.01), maximize = "tabu", maximize.args = list(score = "bic", tabu = 10))
 # rsmax2(rdf_lt, restrict = "mmpc", maximize = "hc")
 # mmhc(rdf_lt)
+
+# write factorrdf_to_pydf
+# write impute function
 
 def empty_graph(node_names):
     node_names = list(node_names)
