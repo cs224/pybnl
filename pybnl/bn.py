@@ -397,7 +397,7 @@ class ConstraintBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
 # http://www.bnlearn.com/documentation/man/hc.html
 # hc(rdf_lt, score = "bic", iss=1, restart = 10, perturb = 5, start = random.graph(names(rdf_lt)))
-def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart=10, perturb=5, start='random_graph'):
+def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart=10, perturb=5, start='random_graph', whitelist=None):
     rdf = rpy2.robjects.pandas2ri.py2ri(ldf)
     rhcfn = rpy2.robjects.r['hc']
     if start == 'random_graph':
@@ -406,16 +406,20 @@ def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart
         start = rrandomgraphfn(rnamesfn(rdf))
     else:
         start = rpy2.rinterface.NULL
-    return rhcfn(rdf, score=score, iss=iss, restart=restart, perturb=perturb, start=start)
+    if whitelist is not None:
+        rwl = rpy2.robjects.pandas2ri.py2ri(whitelist)
+    else:
+        rwl = rpy2.rinterface.MissingArg
+    return rhcfn(rdf, score=score, iss=iss, restart=restart, perturb=perturb, start=start, whitelist=rwl)
 
 
 class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf, algorithm='hc'):
+    def __init__(self, ldf, algorithm='hc', whitelist=None):
         super(ScoreBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
         self.algorithmfn = None
         if algorithm == 'hc':
-            self.algorithmfn = lambda ldf: score_base_structure_learning_hill_climbing(ldf)
+            self.algorithmfn = lambda ldf: score_base_structure_learning_hill_climbing(ldf, whitelist=whitelist)
 
     def fit(self, X=None, y=None):
         self.rnet = self.algorithmfn(self.df)
@@ -441,13 +445,14 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
     # random.sample(): without replacement
     def fit(self, X=None, y=None):
         imputed = self.df.copy()
+        r_df = pydf_to_factorrdf(self.df)
+
         k = len(self.df)
         for ln in self.latent_names:
             levels = self.latent_levels[ln]
             imputed.loc[:,ln] = random.choices(levels,k=k)
             imputed[ln] = imputed[ln].astype(self.df[ln].dtype)
 
-        print(imputed.columns)
         # fitted = bn.fit(empty.graph(names(ldmarks)), imputed)
         f = NetAndDataDiscreteBayesNetwork(imputed, rnet=empty_graph(imputed.columns))
         f.fit()
@@ -462,6 +467,25 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
             idx = list(imputed.columns).index(ln)
             prob_idx = list(f.rfit[idx].names).index('prob')
             f.rfit[idx][prob_idx] = ra
+
+        wl = set(itertools.product(self.latent_names, self.df.columns))
+        wl_substract = set(zip(self.df.columns, self.df.columns))
+        whitelist = pd.DataFrame(list(wl - wl_substract),columns=['from', 'to']).sort_values(['from','to'])
+
+        for i in range(15):
+            # expectation step.
+            imputed_ = rpy2.robjects.r('impute')(f.rfit, r_df, method='bayes-lw')
+            imputed = factorrdf_to_pydf(imputed_)
+            # maximisation step
+            f_new = ScoreBasedNetFromDataDiscreteBayesNetwork(imputed, whitelist=whitelist)
+            f_new.fit()
+            if rall_equal_fits(f.rfit, f_new.rfit):
+                break
+            else:
+                f = f_new
+
+        print(i)
+
 
         # for (i in 1:15) {
         #     # expectation step.
@@ -483,8 +507,15 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
         # for i in range(15):
 
+        self.rfit = f.rfit
+        self.rnet = rfit2rnet(self.rfit)
+        rcompilefn = rpy2.robjects.r['compile']
+        rasgrainfn = rpy2.robjects.r['as.grain']
+        self.grain = rcompilefn(rasgrainfn(self.rfit))
 
-        return f
+        self.imputed = imputed
+
+        return self
 
 
 # http://www.bnlearn.com/documentation/man/hybrid.html
@@ -494,6 +525,12 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
 # write factorrdf_to_pydf
 # write impute function
+
+def rall_equal_fits(rfit1, rfit2):
+    rallequalfn = rpy2.robjects.r['all.equal']
+    ristruefn = rpy2.robjects.r['isTRUE']
+    return ristruefn(rallequalfn(rfit1, rfit2))[0]
+
 
 def empty_graph(node_names):
     node_names = list(node_names)
