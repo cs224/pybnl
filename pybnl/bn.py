@@ -474,6 +474,7 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
         for i in range(15):
             # expectation step.
+            # set.seed(12345)
             imputed_ = rpy2.robjects.r('impute')(f.rfit, r_df, method='bayes-lw')
             imputed = factorrdf_to_pydf(imputed_)
             # maximisation step
