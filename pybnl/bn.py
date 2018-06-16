@@ -5,7 +5,10 @@ locale.setlocale(locale.LC_ALL, 'C')
 import numpy as np, xarray as xr, pandas as pd
 import networkx as nx, networkx.algorithms.dag, graphviz
 import sklearn.base
+from sklearn.utils import check_array
+from sklearn.utils.validation import check_is_fitted
 import itertools, collections, tempfile, random
+import warnings
 
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
@@ -106,6 +109,11 @@ class DiscreteTabularCPM():
         #tmp.columns = [self.target]
         return tmp
 
+def bf(rnet1, rnet2, ldf):
+    rbffn = rpy2.robjects.r('BF')
+    r_df = pydf_to_factorrdf(ldf)
+    return rbffn(rnet1, rnet2, r_df, score="bde", iss=1)[0]
+
 
 class BayesNetworkStructure():
     def __init__(self, rnet):
@@ -129,8 +137,8 @@ class BayesNetworkStructure():
         else:
             return dot(*rnet2cpdag(self.rnet), engine=engine)
 
-    def score(self, ldf):
-        return score(self.rnet, ldf)
+    def score(self, ldf, type='bic'):
+        return rnetscore(self.rnet, ldf, type=type)
 
     def vstructs(self):
         return vstructs(self.rnet)
@@ -142,6 +150,8 @@ class BayesNetworkStructure():
         self.rnet = rnet
         return self
 
+    def bf(self,other, ldf):
+        return bf(self.rnet, other.rnet, ldf)
 
 class BayesNetworkBase():
 
@@ -192,6 +202,14 @@ class BayesNetworkBase():
     def structure(self):
         return BayesNetworkStructure(self.rnet)
 
+    def score(self, Xt=None, y=None, type = 'bic'):
+        return self.structure().score(self.df, type=type)
+
+    def bf(self, other, ldf=None):
+        if ldf is None:
+            ldf = self.df
+        return self.structure().bf(other.structure(), ldf)
+
 class CustomDiscreteBayesNetwork(BayesNetworkBase):
 
     def __init__(self, ldf_list, xrds=None):
@@ -228,6 +246,7 @@ class CustomDiscreteBayesNetwork(BayesNetworkBase):
         rcompilefn = rpy2.robjects.r['compile']
         rasgrainfn = rpy2.robjects.r['as.grain']
         self.grain = rcompilefn(rasgrainfn(self.rfit))
+
 
 
 # https://realpython.com/instance-class-and-static-methods-demystified/
@@ -304,17 +323,157 @@ def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
 
     return rdf
 
+
+# if isinstance(l,(list,pd.core.series.Series,np.ndarray)):
+def sklearn_fit_helper_transform_X(X):
+    # print('sklearn_fit_helper_transform_X')
+    ldf = None
+    # if isinstance(l,(list,pd.core.series.Series,np.ndarray)):
+    if isinstance(X, pd.DataFrame):
+        ldf = X
+    elif isinstance(X, np.ndarray):
+        ldf = pd.DataFrame(X)
+    else:
+        raise ValueError('Only accepting pandas ')
+
+    # check_array(ldf)
+    if len(ldf.shape) != 2:
+        raise RuntimeError("X has invalid shape!")
+    return ldf
+
+
+# https://stats.stackexchange.com/questions/5253/how-do-i-get-the-number-of-rows-of-a-data-frame-in-r
+# https://stackoverflow.com/questions/14808945/check-if-variable-is-dataframe
+# https://stackoverflow.com/questions/1549801/what-are-the-differences-between-type-and-isinstance
+class HarteminkBinTransformer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+    def __init__(self, breaks, ibreaks=None):
+        self.breaks  = breaks
+        self.ibreaks = ibreaks
+
+    def fit(self, X=None, y=None, r_df=None, seed=None):
+        # X = check_array(X)
+        # if len(X.shape) != 2:
+        #     raise RuntimeError("X has invalid shape!")
+
+        self.df_ = sklearn_fit_helper_transform_X(X)
+
+        if r_df is None:
+            df = self.df_
+            # find all non categorical numeric columns and assume that they are to be binned
+            numeric_columns = []
+            categorical_columns = []
+            for col in df.columns:
+                if df[col].dtype.name == 'category':
+                    categorical_columns += [col]
+                    continue
+                if not np.issubdtype(df[col].dtype, np.number):
+                    continue
+                numeric_columns += [col]
+            r_df = rpy2.robjects.pandas2ri.py2ri(df[numeric_columns])
+
+        if self.ibreaks is None:
+            rnrow       = rpy2.robjects.r['nrow']
+            unqiue_length = rnrow(r_df)[0]
+            colnames = list(r_df.colnames)
+            for i, colname in enumerate(colnames):
+                ul = len(np.unique(r_df[i]))
+                unqiue_length = np.min([unqiue_length, ul])
+        else:
+            unqiue_length = self.ibreaks
+
+        if seed is None:
+            rsetseed()
+        else:
+            rsetseed(seed=seed)
+        rdiscretize = rpy2.robjects.r['discretize']
+        self.r_ddf_ = None
+        while self.r_ddf_ is None and unqiue_length > self.breaks:
+            try:
+                self.r_ddf_ = rdiscretize(r_df, breaks=self.breaks, method='hartemink', ibreaks=unqiue_length, idisc='quantile')
+            except rpy2.rinterface.RRuntimeError as e:
+                unqiue_length -= 1
+                warnings.warn("ibreaks problem, reducing ibreaks to {}".format(unqiue_length), rpy2.rinterface.RRuntimeWarning)
+
+        self.ddf_ = factorrdf_to_pydf(self.r_ddf_)
+
+        return self
+
+    def transform(self, X=None):
+        try:
+            getattr(self, "ddf_")
+        except AttributeError:
+            raise RuntimeError("You must call fit before calling transform!")
+
+        # X = check_array(X)
+
+        return self.ddf_
+
+
+class Imputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+    def __init__(self, fit, ldf):
+        self.f = fit
+        self.df  = ldf
+
+    def fit(self, X=None, y=None, r_df=None, seed=None):
+        # X = check_array(X)
+        # if len(X.shape) != 2:
+        #     raise RuntimeError("X has invalid shape!")
+
+        if r_df is None:
+            r_df = pydf_to_factorrdf(self.df)
+
+        if seed is None:
+            rsetseed()
+        else:
+            rsetseed(seed=seed)
+        self.rimputed_ = rpy2.robjects.r('impute')(self.f.rfit, r_df, method='bayes-lw')
+        self.imputed_ = factorrdf_to_pydf(self.rimputed_)
+
+        return self
+
+    def transform(self, X=None):
+        try:
+            getattr(self, "imputed_")
+        except AttributeError:
+            raise RuntimeError("You must call fit before calling transform!")
+
+        # X = check_array(X)
+
+        return self.imputed_
+
+
+global_default_random_seed_init = 42
+
+# random.seed np.random.seed np.random.RandomState
+def rsetseed(seed=global_default_random_seed_init):
+    rsetseedfn = rpy2.robjects.r('set.seed')
+    rsetseedfn(seed)
+
 def check_dtype_categorical(ldf):
-    for column in ldf.columns:
+    # print(type(ldf))
+    for column in list(ldf.columns):
         if ldf[column].dtype.name != 'category' or not all(isinstance(item, str) for item in list(ldf[column].dtype.categories)):
             raise ValueError('Dataframe needs to contain only categorical data columns and the categories have to be string values!')
 
 class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
     def __init__(self, ldf):
-        check_dtype_categorical(ldf)
         self.df = ldf
+        self.df_for_metadata = ldf
 
-    def fit(self, X, y=None):
+    def fit(self, X, y=None, seed=None):
+        if seed is None:
+            rsetseed()
+        else:
+            rsetseed(seed=seed)
+
+        if X is not None:
+            self.df = sklearn_fit_helper_transform_X(X)
+
+        if self.df is None:
+            raise RuntimeError('You either have to specify the data frame when you call the constructur (the ldf parameter) or when you call the fit (the X parameter) method!')
+        else:
+            check_dtype_categorical(self.df)
+
         return self
 
     def transform(self, X):
@@ -330,9 +489,28 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
         self.grain = rcompilefn(rasgrainfn(self.rfit))
 
 
+def generate_model_string_for_node(dg, node):
+    target_var = node
+    parent_vars = list(dg.predecessors(node))
+    return generate_model_string(target_var, parent_vars)
+
+def digraph2rnet(dg):
+    sorted_node_list = list(networkx.algorithms.dag.topological_sort(dg))
+    model_string = ''
+    for node in sorted_node_list:
+        model_string += generate_model_string_for_node(dg, node)
+
+    model2network = rpy2.robjects.r['model2network']
+    r_model_string = rpy2.robjects.StrVector([model_string])
+    return model2network(r_model_string)
+
+def digraph2netstruct(dg):
+    rnet = digraph2rnet(dg)
+    return BayesNetworkStructure(rnet)
+
 class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf, dg=None, model_string=None, rnet=None):
+    def __init__(self, ldf=None, dg=None, model_string=None, rnet=None):
         super(NetAndDataDiscreteBayesNetwork, self).__init__(ldf)
         self.dg = dg
         self.model_string = model_string
@@ -369,7 +547,8 @@ class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         r_model_string = rpy2.robjects.StrVector([self.model_string])
         self.rnet = model2network(r_model_string)
 
-    def fit(self, X=None, y=None):
+    def fit(self, X=None, y=None, seed=None):
+        super(NetAndDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
         self.generate_fit()
         return self
 
@@ -383,13 +562,14 @@ def constrained_base_structure_learning_si_hiton_pc(ldf, test="mc-mi", undirecte
 # si.hiton.pc(x, cluster = NULL, whitelist = NULL, blacklist = NULL, test = NULL, alpha = 0.05, B = NULL, max.sx = NULL, debug = FALSE, optimized = FALSE, strict = FALSE, undirected = TRUE)
 class ConstraintBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf, algorithm='HITON-PC'):
+    def __init__(self, ldf=None, algorithm='HITON-PC'):
         super(ConstraintBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
         self.algorithmfn = None
         if algorithm == 'HITON-PC':
             self.algorithmfn = lambda ldf: constrained_base_structure_learning_si_hiton_pc(ldf)
 
-    def fit(self, X=None, y=None):
+    def fit(self, X=None, y=None, seed=None):
+        super(ConstraintBasedNetFromDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
         self.rnet = self.algorithmfn(self.df)
         self.rnet = rnet2dagrnet(self.rnet)
         self.generate_fit()
@@ -415,22 +595,22 @@ def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart
 
 class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf, algorithm='hc', whitelist=None):
+    def __init__(self, ldf=None, algorithm='hc', whitelist=None):
         super(ScoreBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
         self.algorithmfn = None
         if algorithm == 'hc':
             self.algorithmfn = lambda ldf: score_base_structure_learning_hill_climbing(ldf, whitelist=whitelist)
 
-    def fit(self, X=None, y=None):
+    def fit(self, X=None, y=None, seed=None):
+        super(ScoreBasedNetFromDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
         self.rnet = self.algorithmfn(self.df)
         self.rnet = rnet2dagrnet(self.rnet)
         self.generate_fit()
         return self
 
-
 class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf):
+    def __init__(self, ldf=None):
         super(StructuralEMNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
         self.latent_names = identify_latent_variables(self.df)
         if len(self.latent_names) == 0:
@@ -443,19 +623,21 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
     # https://docs.python.org/3/library/random.html
     # random.choices(): with replacement
     # random.sample(): without replacement
-    def fit(self, X=None, y=None):
+    def fit(self, X=None, y=None, seed=None):
+        super(StructuralEMNetFromDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
         imputed = self.df.copy()
         r_df = pydf_to_factorrdf(self.df)
 
         k = len(self.df)
         for ln in self.latent_names:
             levels = self.latent_levels[ln]
+            random.seed(global_default_random_seed_init)
             imputed.loc[:,ln] = random.choices(levels,k=k)
             imputed[ln] = imputed[ln].astype(self.df[ln].dtype)
 
         # fitted = bn.fit(empty.graph(names(ldmarks)), imputed)
         f = NetAndDataDiscreteBayesNetwork(imputed, rnet=empty_graph(imputed.columns))
-        f.fit()
+        f.fit(seed=seed)
 
         # fitted$LAT = array(c(0.5, 0.5), dim = 2, dimnames = list(c("A", "B")))
         for ln in self.latent_names:
@@ -475,8 +657,10 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         for i in range(15):
             # expectation step.
             # set.seed(12345)
-            imputed_ = rpy2.robjects.r('impute')(f.rfit, r_df, method='bayes-lw')
-            imputed = factorrdf_to_pydf(imputed_)
+            im = Imputer(f, self.df)
+            imputed = im.fit_transform(X=None, r_df=r_df, seed=seed)
+            # imputed_ = rpy2.robjects.r('impute')(f.rfit, r_df, method='bayes-lw')
+            # imputed = factorrdf_to_pydf(imputed_)
             # maximisation step
             f_new = ScoreBasedNetFromDataDiscreteBayesNetwork(imputed, whitelist=whitelist)
             f_new.fit()
@@ -514,10 +698,12 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         rasgrainfn = rpy2.robjects.r['as.grain']
         self.grain = rcompilefn(rasgrainfn(self.rfit))
 
-        self.imputed = imputed
+        self.imputed_ = imputed
 
         return self
 
+    def score(self, Xt=None, y=None, type = 'bic'):
+        return self.structure().score(self.imputed_, type=type)
 
 # http://www.bnlearn.com/documentation/man/hybrid.html
 # rsmax2(rdf_lt, restrict = "si.hiton.pc", restrict.args = list(test = "x2", alpha = 0.01), maximize = "tabu", maximize.args = list(score = "bic", tabu = 10))
@@ -590,7 +776,7 @@ def hybrid_structure_learning_rxmax2_sihitonpc_tabu(ldf):
 
 class HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf, algorithm='mmhc'):
+    def __init__(self, ldf=None, algorithm='mmhc'):
         super(HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
         self.algorithmfn = None
         if algorithm == 'mmhc':
@@ -598,7 +784,8 @@ class HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork(LearningBayes
         if algorithm == 'rxmax2_sihitonpc_tabu':
             self.algorithmfn = lambda ldf: hybrid_structure_learning_rxmax2_sihitonpc_tabu(ldf)
 
-    def fit(self, X=None, y=None):
+    def fit(self, X=None, y=None, seed=None):
+        super(HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
         self.rnet = self.algorithmfn(self.df)
         self.rnet = rnet2dagrnet(self.rnet)
         self.generate_fit()
@@ -751,11 +938,15 @@ def rnet2dag(rnet):
     rarcsfn    = rpy2.robjects.r('arcs')
     rcextendfn = rpy2.robjects.r('cextend')
     rnodesfn  = rpy2.robjects.r('nodes')
+    rlengthfn  = rpy2.robjects.r('length')
 
     tmp = rarcsfn(rcextendfn(rnet))
-
-    frm = list(tmp.rx(True,'from'))
-    to  = list(tmp.rx(True,'to'))
+    if rlengthfn(tmp)[0] == 0:
+        frm = []
+        to = []
+    else:
+        frm = list(tmp.rx(True,'from'))
+        to  = list(tmp.rx(True,'to'))
 
     unidirectional_edges = list(zip(frm,to))
 
@@ -773,9 +964,13 @@ def vstructs(bn):
     return pd.DataFrame(collections.OrderedDict(X=x,Z=z,Y=y))
 
 
+def rnetscore(rnet, ldf, type='loglik'):
+    rscorefn  = rpy2.robjects.r('score')
+    return rscorefn(rnet, data=pydf_to_factorrdf(ldf), type=type)[0]
+
 def score(bn, ldf, type='loglik'):
     rscorefn  = rpy2.robjects.r('score')
-    return rscorefn(bn.rnet, data=ldf, type=type)[0]
+    return rscorefn(bn.rnet, data=pydf_to_factorrdf(ldf), type=type)[0]
 
 def rfit2rnet(rfit):
     rbnnetfn = rpy2.robjects.r('bn.net')
