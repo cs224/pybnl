@@ -1031,3 +1031,26 @@ def relative_mutual_information(seq1, seq2):
 def relative_mutual_information_distance(seq1, seq2):
     return 1.0 - relative_mutual_information(seq1, seq2)
 
+
+def discrete_and_continuous_variables_with_and_without_nulls(ldf, cutoff=20):
+    discrete_non_null = []
+    discrete_with_null = []
+    continuous_non_null = []
+    continuous_with_null = []
+    levels_map = dict()
+    for col in ldf.columns:
+        uq = ldf[col].unique()
+        if len(uq) > cutoff:
+            if pd.isnull(uq).any():
+                continuous_with_null += [col]
+            else:
+                continuous_non_null += [col]
+        else:
+            if pd.isnull(uq).any():
+                discrete_with_null += [col]
+                levels_map[col] = set(uq)  - set([np.nan])
+            else:
+                levels_map[col] = set(uq)
+                discrete_non_null += [col]
+
+    return discrete_non_null, discrete_with_null, continuous_non_null, continuous_with_null, levels_map
