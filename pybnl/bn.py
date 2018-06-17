@@ -4,7 +4,7 @@ locale.setlocale(locale.LC_ALL, 'C')
 
 import numpy as np, xarray as xr, pandas as pd
 import networkx as nx, networkx.algorithms.dag, graphviz
-import sklearn.base
+import sklearn.base, sklearn.metrics, sklearn.metrics.cluster
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
 import itertools, collections, tempfile, random
@@ -994,3 +994,40 @@ def dot(nodes, unidirectional_edges, bidirectional_edges, engine='fdp', graph_na
         dg_dot.edge(edge[0], edge[1], dir='none')
 
     return dg_dot
+
+def convert_to_categorical_series(seq):
+    if not isinstance(seq, pd.Series):
+        try:
+            seq_iterator = iter(seq)
+        except TypeError as te:
+            raise te
+        seq = pd.Series(seq)
+
+    if not seq.dtype.name == 'category':
+        levels = seq.unique()
+        cdt = pd.api.types.CategoricalDtype(levels, ordered=False)
+        seq = seq.astype(cdt)
+
+    return seq
+
+
+
+
+def relative_mutual_information(seq1, seq2):
+    u = convert_to_categorical_series(seq1)
+    v = convert_to_categorical_series(seq2)
+    is_null_u = pd.isnull(u)
+    is_null_v = pd.isnull(v)
+    is_null_either = is_null_u | is_null_v
+    u_ = u[~is_null_either]
+    v_ = v[~is_null_either]
+    eu_ = sklearn.metrics.cluster.supervised.entropy(u_)
+    ev_ = sklearn.metrics.cluster.supervised.entropy(v_)
+    mi_ = sklearn.metrics.mutual_info_score(u_, v_)
+    # print('{},{},{}'.format(eu_,ev_,mi_))
+    rmu_ = np.max([mi_ / eu_, mi_ / ev_])
+    return rmu_
+
+def relative_mutual_information_distance(seq1, seq2):
+    return 1.0 - relative_mutual_information(seq1, seq2)
+
