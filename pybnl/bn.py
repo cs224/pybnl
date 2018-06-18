@@ -1040,6 +1040,10 @@ def discrete_and_continuous_variables_with_and_without_nulls(ldf, cutoff=20):
     levels_map = dict()
     for col in ldf.columns:
         uq = ldf[col].unique()
+        number_type = False
+        if all([np.issubdtype(type(level), np.number) for level in uq]):
+            number_type = True
+
         if len(uq) > cutoff:
             if pd.isnull(uq).any():
                 continuous_with_null += [col]
@@ -1048,9 +1052,15 @@ def discrete_and_continuous_variables_with_and_without_nulls(ldf, cutoff=20):
         else:
             if pd.isnull(uq).any():
                 discrete_with_null += [col]
-                levels_map[col] = set(uq)  - set([np.nan])
+                if number_type:
+                    levels_map[col] = sorted(list(set(uq) - set([np.nan])))
+                else:
+                    levels_map[col] = set(uq)  - set([np.nan])
             else:
-                levels_map[col] = set(uq)
                 discrete_non_null += [col]
+                if number_type:
+                    levels_map[col] = sorted(list(uq))
+                else:
+                    levels_map[col] = list(uq)
 
     return discrete_non_null, discrete_with_null, continuous_non_null, continuous_with_null, levels_map
