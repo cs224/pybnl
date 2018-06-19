@@ -604,6 +604,7 @@ class ParametricEMNetAndDataDiscreteBayesNetwork(NetAndDataDiscreteBayesNetwork)
         self.f_ = f
         f.fit(seed=seed)
 
+        return self
         for i in range(15):
             print('ParametricEMNetAndDataDiscreteBayesNetwork iteration: {}'.format(i))
             # expectation step.
