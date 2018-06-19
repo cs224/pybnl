@@ -423,7 +423,8 @@ class Imputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
         # if len(X.shape) != 2:
         #     raise RuntimeError("X has invalid shape!")
 
-        print('Imputer in: {}'.format(self.df['Bsmt_Full_Bath'].dtype.categories))
+        if self.df.columns.isin(['Bsmt_Full_Bath']).any():
+            print('Imputer in: {}'.format(self.df['Bsmt_Full_Bath'].dtype.categories))
         if r_df is None:
             r_df = pydf_to_factorrdf(self.df)
 
@@ -434,8 +435,9 @@ class Imputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
         self.r_df_ = r_df
         self.rimputed_ = rpy2.robjects.r('impute')(self.f.rfit, r_df, method='bayes-lw')
         self.imputed_ = factorrdf_to_pydf(self.rimputed_)
-        print('Imputer out: {}'.format(self.imputed_['Bsmt_Full_Bath'].dtype.categories))
-        print('Bsmt_Full_Bath diff: {}'.format(self.imputed_['Bsmt_Full_Bath'] == self.df['Bsmt_Full_Bath']))
+        if self.df.columns.isin(['Bsmt_Full_Bath']).any():
+            print('Imputer out: {}'.format(self.imputed_['Bsmt_Full_Bath'].dtype.categories))
+            print('Bsmt_Full_Bath diff: {}'.format(self.imputed_['Bsmt_Full_Bath'].astype(str).values == self.df['Bsmt_Full_Bath'].astype(str).values))
 
         return self
 
@@ -468,7 +470,6 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
         self.df = ldf
         self.df_for_metadata = ldf
         print('LearningBayesNetworkBase: pydf_to_factorrdf')
-        self.r_df_ = pydf_to_factorrdf(self.df)
 
     def fit(self, X, y=None, seed=None):
         if seed is None:
@@ -491,6 +492,7 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
 
     def generate_fit(self):
         rfitfn = rpy2.robjects.r['bn.fit']
+        self.r_df_ = pydf_to_factorrdf(self.df)
         self.rfit = rfitfn(self.rnet, data=self.r_df_)
 
         # compile(as.grain(dfit))
@@ -581,9 +583,13 @@ class ParametricEMNetAndDataDiscreteBayesNetwork(NetAndDataDiscreteBayesNetwork)
     def fit(self, X=None, y=None, seed=None):
         LearningBayesNetworkBase.fit(self, X=X, y=y, seed=seed)
 
-        print('self.df: {}'.format(self.df.Bsmt_Full_Bath.dtype.categories))
+        self.r_df_ = pydf_to_factorrdf(self.df)
+
+        if self.df.columns.isin(['Bsmt_Full_Bath']).any():
+            print('self.df: {}'.format(self.df.Bsmt_Full_Bath.dtype.categories))
         imputed = self.df.copy()
-        print('imputed: {}'.format(imputed.Bsmt_Full_Bath.dtype.categories))
+        if self.df.columns.isin(['Bsmt_Full_Bath']).any():
+            print('imputed: {}'.format(imputed.Bsmt_Full_Bath.dtype.categories))
 
         for ln in self.discrete_with_null:
             levels = self.latent_levels[ln]
@@ -604,7 +610,8 @@ class ParametricEMNetAndDataDiscreteBayesNetwork(NetAndDataDiscreteBayesNetwork)
             im = Imputer(f, self.df)
             self.im_ = im
             imputed = im.fit_transform(X=None, r_df=self.r_df_, seed=seed)
-            print('imputed: {}'.format(imputed.Bsmt_Full_Bath.dtype.categories))
+            if self.df.columns.isin(['Bsmt_Full_Bath']).any():
+                print('imputed: {}'.format(imputed.Bsmt_Full_Bath.dtype.categories))
             # maximisation step
             f_new = NetAndDataDiscreteBayesNetwork(imputed, rnet=self.rnet)
             f_new.fit()
