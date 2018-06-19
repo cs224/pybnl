@@ -258,6 +258,7 @@ def pydf_to_factorrdf(ldf):
     latent = identify_latent_variables(ldf)
     NA_lds = None
     if len(latent) > 0:
+        print('identified latent variables: {}'.format(latent))
         NA_lds = lds = [rpy2.rinterface.NA_Character for _ in range(len(ldf))]
     # r_df = rpy2.robjects.pandas2ri.py2ri(ldf)
     # rpy2.rlike.container.OrdDict([('value', robjects.IntVector((1,2,3))), ('letter', robjects.StrVector(('x', 'y', 'z')))])
@@ -269,8 +270,11 @@ def pydf_to_factorrdf(ldf):
         cat_type = ldf[colname].dtype
         levels = rpy2.robjects.StrVector(list(cat_type.categories))
         ordered = cat_type.ordered
+        if colname == 'Bsmt_Full_Bath':
+            print('col: {}, levels: {}, ordered: {}'.format(colname, levels, ordered))
 
         lds = ldf[colname]
+        factorized_column = None
         if colname in latent:
             factorized_column =  rpy2.robjects.vectors.FactorVector(rpy2.robjects.StrVector(NA_lds), levels=levels, ordered=ordered)
         else:
@@ -419,6 +423,7 @@ class Imputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
         # if len(X.shape) != 2:
         #     raise RuntimeError("X has invalid shape!")
 
+        print('Imputer in: {}'.format(self.df['Bsmt_Full_Bath'].dtype.categories))
         if r_df is None:
             r_df = pydf_to_factorrdf(self.df)
 
@@ -426,8 +431,11 @@ class Imputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
             rsetseed()
         else:
             rsetseed(seed=seed)
+        self.r_df_ = r_df
         self.rimputed_ = rpy2.robjects.r('impute')(self.f.rfit, r_df, method='bayes-lw')
         self.imputed_ = factorrdf_to_pydf(self.rimputed_)
+        print('Imputer out: {}'.format(self.imputed_['Bsmt_Full_Bath'].dtype.categories))
+        print('Bsmt_Full_Bath diff: {}'.format(self.imputed_['Bsmt_Full_Bath'] == self.df['Bsmt_Full_Bath']))
 
         return self
 
@@ -453,12 +461,14 @@ def check_dtype_categorical(ldf):
     # print(type(ldf))
     for column in list(ldf.columns):
         if ldf[column].dtype.name != 'category' or not all(isinstance(item, str) for item in list(ldf[column].dtype.categories)):
-            raise ValueError('Dataframe needs to contain only categorical data columns and the categories have to be string values!')
+            raise ValueError('Dataframe needs to contain only categorical data columns and the categories have to be string values! column: {}'.format(column))
 
 class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
     def __init__(self, ldf):
         self.df = ldf
         self.df_for_metadata = ldf
+        print('LearningBayesNetworkBase: pydf_to_factorrdf')
+        self.r_df_ = pydf_to_factorrdf(self.df)
 
     def fit(self, X, y=None, seed=None):
         if seed is None:
@@ -481,7 +491,7 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
 
     def generate_fit(self):
         rfitfn = rpy2.robjects.r['bn.fit']
-        self.rfit = rfitfn(self.rnet, data=pydf_to_factorrdf(self.df))
+        self.rfit = rfitfn(self.rnet, data=self.r_df_)
 
         # compile(as.grain(dfit))
         rcompilefn = rpy2.robjects.r['compile']
@@ -550,6 +560,69 @@ class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
     def fit(self, X=None, y=None, seed=None):
         super(NetAndDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
         self.generate_fit()
+        return self
+
+# https://github.com/jacintoArias/bayesnetRtutorial/blob/master/index.Rmd
+class ParametricEMNetAndDataDiscreteBayesNetwork(NetAndDataDiscreteBayesNetwork):
+
+    def __init__(self, ldf=None, dg=None, model_string=None, rnet=None, discrete_variable_identification_cutoff=30):
+        super(ParametricEMNetAndDataDiscreteBayesNetwork, self).__init__(ldf=ldf, dg=dg, model_string=model_string, rnet=rnet)
+
+        _, discrete_with_null, continuous_non_null, continuous_with_null, _ = discrete_and_continuous_variables_with_and_without_nulls(ldf, cutoff=discrete_variable_identification_cutoff)
+        if len(continuous_non_null) > 0 or len(continuous_with_null) > 0:
+            raise RuntimeError('DiscreteBayesNetwork can only handle discrete variables, but you provided continuous ones: {}'.format(continuous_non_null + continuous_with_null))
+
+        self.discrete_with_null = discrete_with_null
+        self.latent_levels = dict()
+        for ln in self.discrete_with_null:
+            levels = levels_of_latent_variable(self.df, ln)
+            self.latent_levels[ln] = levels
+
+    def fit(self, X=None, y=None, seed=None):
+        LearningBayesNetworkBase.fit(self, X=X, y=y, seed=seed)
+
+        print('self.df: {}'.format(self.df.Bsmt_Full_Bath.dtype.categories))
+        imputed = self.df.copy()
+        print('imputed: {}'.format(imputed.Bsmt_Full_Bath.dtype.categories))
+
+        for ln in self.discrete_with_null:
+            levels = self.latent_levels[ln]
+            random.seed(global_default_random_seed_init)
+            lds = self.df[ln]
+            k = sum(pd.isnull(lds))
+            imputed.loc[pd.isnull(lds),ln] = random.choices(levels,k=k)
+            imputed[ln] = imputed[ln].astype(self.df[ln].dtype)
+
+        # fitted = bn.fit(empty.graph(names(ldmarks)), imputed)
+        f = NetAndDataDiscreteBayesNetwork(imputed, rnet=self.rnet)
+        self.f_ = f
+        f.fit(seed=seed)
+
+        for i in range(15):
+            print('ParametricEMNetAndDataDiscreteBayesNetwork iteration: {}'.format(i))
+            # expectation step.
+            im = Imputer(f, self.df)
+            self.im_ = im
+            imputed = im.fit_transform(X=None, r_df=self.r_df_, seed=seed)
+            print('imputed: {}'.format(imputed.Bsmt_Full_Bath.dtype.categories))
+            # maximisation step
+            f_new = NetAndDataDiscreteBayesNetwork(imputed, rnet=self.rnet)
+            f_new.fit()
+            if rall_equal_fits(f.rfit, f_new.rfit):
+                break
+            else:
+                f = f_new
+                self.f_ = f
+
+        print(i)
+
+        self.rfit = f.rfit
+        rcompilefn = rpy2.robjects.r['compile']
+        rasgrainfn = rpy2.robjects.r['as.grain']
+        self.grain = rcompilefn(rasgrainfn(self.rfit))
+
+        self.imputed_ = imputed
+
         return self
 
 
@@ -1064,3 +1137,16 @@ def discrete_and_continuous_variables_with_and_without_nulls(ldf, cutoff=20):
                     levels_map[col] = list(uq)
 
     return discrete_non_null, discrete_with_null, continuous_non_null, continuous_with_null, levels_map
+
+def convert_interval_index_categories_to_string_categories(ldf, inplace=True):
+    if not inplace:
+        ldf = ldf.copy()
+
+    for column in ldf.columns:
+        if ldf[column].dtype.name != 'category':
+            continue
+        levels = ['' + str(cat) for cat in ldf[column].dtype.categories]
+        cdt = pd.api.types.CategoricalDtype(levels, ordered=True)
+        ldf.loc[:,column] = ldf[column].apply(lambda x: str(x)).astype(cdt)
+
+    return ldf
