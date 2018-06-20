@@ -187,7 +187,13 @@ class BayesNetworkBase():
                 raise RuntimeError('query node: {} is not present in network: {}'.format(node, nodes))
 
         for node, value in evidence.items():
-            allowed_values = list(self.rfit.rx(node)[0].rx('prob')[0].names.rx(node)[0])
+            # print('node, value: {}, {}'.format(node, value))
+            if len(self.rfit.rx(node)[0].rx('prob')[0].names) == 1:
+                allowed_values = list(self.rfit.rx(node)[0].rx('prob')[0].names[0])
+            elif len(self.rfit.rx(node)[0].rx('prob')[0].names) == 2:
+                allowed_values = list(self.rfit.rx(node)[0].rx('prob')[0].names.rx(node)[0])
+            else:
+                raise RuntimeError('Should never happen!')
             if value not in allowed_values:
                 raise RuntimeError('evidence node: {} value: {} does not exist in the categories: {}'.format(node, value, allowed_values))
 
@@ -299,8 +305,8 @@ def pydf_to_factorrdf(ldf):
         cat_type = ldf[colname].dtype
         levels = rpy2.robjects.StrVector(list(cat_type.categories))
         ordered = cat_type.ordered
-        if colname == 'Bsmt_Full_Bath':
-            print('col: {}, levels: {}, ordered: {}'.format(colname, levels, ordered))
+        # if colname == 'Bsmt_Full_Bath':
+        #     print('col: {}, levels: {}, ordered: {}'.format(colname, levels, ordered))
 
         lds = ldf[colname]
         factorized_column = None
@@ -444,10 +450,96 @@ class HarteminkBinTransformer(sklearn.base.BaseEstimator, sklearn.base.Transform
 
         return self.ddf_
 
+def initial_random_impute(ldf, cutoff=30):
+    imputed = ldf.copy()
+    _, discrete_with_null, continuous_non_null, continuous_with_null, _ = discrete_and_continuous_variables_with_and_without_nulls(ldf, cutoff=cutoff)
+    latent_levels = dict()
+    for ln in discrete_with_null:
+        levels = levels_of_latent_variable(ldf, ln)
+        latent_levels[ln] = levels
 
-class Imputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
-    def __init__(self, fit, ldf):
-        self.f = fit
+    for ln in discrete_with_null:
+        levels = latent_levels[ln]
+        random.seed(global_default_random_seed_init)
+        lds = ldf[ln]
+        k = sum(pd.isnull(lds))
+        imputed.loc[pd.isnull(lds), ln] = random.choices(levels, k=k)
+        imputed[ln] = imputed[ln].astype(ldf[ln].dtype)
+
+    return imputed
+
+def initial_random_impute_fit(ldf, dg=None, rnet=None, cutoff=30):
+    imputed = initial_random_impute(ldf, cutoff=cutoff)
+    f = NetAndDataDiscreteBayesNetwork(imputed, dg=dg, rnet=rnet)
+    f.fit()
+    return f
+
+# fitted = bn.fit(empty.graph(names(ldmarks)), imputed)
+#
+
+
+class ExactInferenceImputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+    def __init__(self, f, ldf):
+        # super(ExactInferenceImputer, self).__init__()
+        self.f = f
+        self.df  = ldf
+
+    def __repr__(self):
+        class_name = self.__class__.__name__
+        return class_name
+
+    def fit(self, X=None, y=None, seed=None):
+        if X is None:
+            ldf = self.df
+        else:
+            ldf = sklearn_fit_helper_transform_X(X)
+
+        ldf_imputed = ldf.copy()
+
+        rs_init = len(ldf)
+        rs = np.random.RandomState(rs_init)
+
+        lds_rows_with_null_values         = ldf.apply(pd.isnull, axis=1).any(axis=1)
+        lds_rows_with_null_values_indices = ldf.index[lds_rows_with_null_values]
+        for idx in list(lds_rows_with_null_values_indices):
+            row = ldf.loc[idx,:]
+            row_null_values       = pd.isnull(row)
+            null_column_names     = ldf.columns[row_null_values]
+            non_null_column_names = ldf.columns[~row_null_values]
+            non_null_values       = row[~row_null_values]
+            evidence    = dict(zip(non_null_column_names, non_null_values))
+            query_nodes = list(null_column_names)
+            # print('evidence: {}, query_nodes: {}'.format(evidence, query_nodes))
+            answers = self.f.exact_query(evidence, query_nodes)
+            # print('answers: {}'.format(answers))
+            imputed_values = []
+            for node in query_nodes:
+                answer = answers[node]
+                levels = list(answer.keys())
+                probabilities = [answer[level] for level in levels]
+                # print('node: {}, levels: {}, probabilities: {}'.format(node, levels, probabilities))
+                imputed_value =  rs.choice(levels,1,probabilities)[0]
+                # print('node: {}, levels: {}, probabilities: {}: impute_value: {}'.format(node, levels, probabilities, impute_value))
+                imputed_values += [imputed_value]
+
+            ldf_imputed.loc[idx, query_nodes] = imputed_values
+
+        self.imputed_ = ldf_imputed
+
+        return self
+
+    def transform(self, X=None):
+        try:
+            getattr(self, "imputed_")
+        except AttributeError:
+            raise RuntimeError("You must call fit before calling transform!")
+
+        return self.imputed_
+
+
+class BNLearnImputer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+    def __init__(self, f, ldf):
+        self.f = f
         self.df  = ldf
 
     def fit(self, X=None, y=None, r_df=None, seed=None):
@@ -503,7 +595,7 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
             validate_node_or_level_names(ldf.columns)
         self.df = ldf
         self.df_for_metadata = ldf
-        print('LearningBayesNetworkBase: pydf_to_factorrdf')
+        # print('LearningBayesNetworkBase: pydf_to_factorrdf')
 
     def fit(self, X, y=None, seed=None):
         if seed is None:
