@@ -150,6 +150,11 @@ class BayesNetworkStructure():
         self.rnet = rnet
         return self
 
+    def nodes(self):
+        rnodesfn = rpy2.robjects.r('nodes')
+        nodes = list(rnodesfn(self.rnet))
+        return nodes
+
     def bf(self,other, ldf):
         return bf(self.rnet, other.rnet, ldf)
 
@@ -162,6 +167,21 @@ class BayesNetworkBase():
         self.grain = None
 
     def exact_query(self,evidence, nodes, only_python_result=True):
+        evidence_nodes = evidence.keys()
+        net_nodes = self.structure().nodes()
+        for node in evidence_nodes:
+            if node not in net_nodes:
+                raise RuntimeError('evidence node: {} is not present in network: {}'.format(node, nodes))
+
+        for node in nodes:
+            if node not in net_nodes:
+                raise RuntimeError('query node: {} is not present in network: {}'.format(node, nodes))
+
+        for node, value in evidence.items():
+            allowed_values = list(self.rfit.rx(node)[0].rx('prob')[0].names.rx(node)[0])
+            if value not in allowed_values:
+                raise RuntimeError('evidence node: {} value: {} does not exist in the categories: {}'.format(node, value, allowed_values))
+
         rlistfn = rpy2.robjects.r['list']
         rsetevidencefn = rpy2.robjects.r['setEvidence']
         rquerygrainfn = rpy2.robjects.r['querygrain']
