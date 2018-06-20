@@ -8,8 +8,7 @@ import sklearn.base, sklearn.metrics, sklearn.metrics.cluster
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
 import itertools, collections, tempfile, random
-import warnings
-
+import warnings, re
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
     rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
@@ -29,6 +28,14 @@ bnlearn     = rpy2.robjects.packages.importr('bnlearn')
 gRain       = rpy2.robjects.packages.importr('gRain')
 
 
+def validate_node_or_level_name(name):
+    if re.match(r'[A-Za-z][A-Za-z0-9_]*', name) is None:
+        raise RuntimeError('You should only use node and/or factor level names that match the regex [A-Za-z][A-Za-z0-9_]*. You used: {}'.format(name))
+
+def validate_node_or_level_names(name_list):
+    for name in name_list:
+        validate_node_or_level_name(name)
+
 def generate_model_string(target_var, parent_vars):
     parent_model_string = ':'.join(parent_vars)
     parent_child_string = '|'.join([target_var, parent_model_string])
@@ -40,6 +47,8 @@ def generate_model_string(target_var, parent_vars):
 class DiscreteTabularCPM():
 
     def __init__(self, ldf, lcpm_xr=None, transform=True):
+        validate_node_or_level_names(ldf.columns)
+
         self.transform = transform
         self.ldf = ldf
 
@@ -166,7 +175,7 @@ class BayesNetworkBase():
         self.rfit  = None
         self.grain = None
 
-    def exact_query(self,evidence, nodes, only_python_result=True):
+    def exact_query(self, evidence, nodes, only_python_result=True):
         evidence_nodes = evidence.keys()
         net_nodes = self.structure().nodes()
         for node in evidence_nodes:
@@ -356,9 +365,12 @@ def sklearn_fit_helper_transform_X(X):
     if isinstance(X, pd.DataFrame):
         ldf = X
     elif isinstance(X, np.ndarray):
-        ldf = pd.DataFrame(X)
+        column_names = ['X{}'.format(i) for i in range(X.shape[1])]
+        ldf = pd.DataFrame(X, columns=column_names)
     else:
         raise ValueError('Only accepting pandas ')
+
+    validate_node_or_level_names(X.columns)
 
     # check_array(ldf)
     if len(ldf.shape) != 2:
@@ -487,6 +499,8 @@ def check_dtype_categorical(ldf):
 
 class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
     def __init__(self, ldf):
+        if ldf is not None:
+            validate_node_or_level_names(ldf.columns)
         self.df = ldf
         self.df_for_metadata = ldf
         print('LearningBayesNetworkBase: pydf_to_factorrdf')
