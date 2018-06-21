@@ -190,10 +190,10 @@ class BayesNetworkBase():
             # print('node, value: {}, {}'.format(node, value))
             if len(self.rfit.rx(node)[0].rx('prob')[0].names) == 1:
                 allowed_values = list(self.rfit.rx(node)[0].rx('prob')[0].names[0])
-            elif len(self.rfit.rx(node)[0].rx('prob')[0].names) == 2:
+            elif len(self.rfit.rx(node)[0].rx('prob')[0].names) > 1:
                 allowed_values = list(self.rfit.rx(node)[0].rx('prob')[0].names.rx(node)[0])
             else:
-                raise RuntimeError('Should never happen!')
+                raise RuntimeError('Should never happen! node, value: {}, {}'.format(node,value))
             if value not in allowed_values:
                 raise RuntimeError('evidence node: {} value: {} does not exist in the categories: {}'.format(node, value, allowed_values))
 
