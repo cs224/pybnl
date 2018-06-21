@@ -2,7 +2,7 @@
 import locale
 locale.setlocale(locale.LC_ALL, 'C')
 
-import numpy as np, xarray as xr, pandas as pd
+import numpy as np, xarray as xr, pandas as pd, scipy, scipy.sparse
 import networkx as nx, networkx.algorithms.dag, graphviz
 import sklearn.base, sklearn.metrics, sklearn.metrics.cluster
 from sklearn.utils import check_array
@@ -47,14 +47,14 @@ def generate_model_string(target_var, parent_vars):
 class DiscreteTabularCPM():
 
     def __init__(self, ldf, lcpm_xr=None, transform=True):
-        validate_node_or_level_names(ldf.columns)
-
         self.transform = transform
         self.ldf = ldf
 
         self.lcpm_xr  = lcpm_xr
         if self.lcpm_xr is not None:
             self.ldf = convert_xarray_array_to_pandas_dtcpm(lcpm_xr)
+
+        validate_node_or_level_names(self.ldf.columns)
 
         self.cpt_to_r()
         self.cpt_to_model_string()
@@ -1218,6 +1218,40 @@ def convert_to_categorical_series(seq):
     return seq
 
 
+def contingency_matrix(labels_true, labels_pred, eps=None, sparse=False):
+
+    if eps is not None and sparse:
+        raise ValueError("Cannot set 'eps' when sparse=True")
+
+    if isinstance(labels_true, pd.Series) and labels_true.dtype.name == 'category':
+        cdt = labels_true.dtype
+        classes, class_idx = cdt.categories, labels_true.cat.codes.values
+    else:
+        classes, class_idx = np.unique(labels_true, return_inverse=True)
+
+    if isinstance(labels_pred, pd.Series) and labels_pred.dtype.name == 'category':
+        cdt = labels_pred.dtype
+        clusters, cluster_idx = cdt.categories, labels_pred.cat.codes.values
+    else:
+        clusters, cluster_idx = np.unique(labels_pred, return_inverse=True)
+    n_classes = classes.shape[0]
+    n_clusters = clusters.shape[0]
+    # Using coo_matrix to accelerate simple histogram calculation,
+    # i.e. bins are consecutive integers
+    # Currently, coo_matrix is faster than histogram2d for simple cases
+    contingency = scipy.sparse.coo_matrix((np.ones(class_idx.shape[0]),
+                                           (class_idx, cluster_idx)),
+                                          shape=(n_classes, n_clusters),
+                                          dtype=np.int)
+    if sparse:
+        contingency = contingency.tocsr()
+        contingency.sum_duplicates()
+    else:
+        contingency = contingency.toarray()
+        if eps is not None:
+            # don't use += as contingency is integer
+            contingency = contingency + eps
+    return contingency
 
 
 def relative_mutual_information(seq1, seq2):
@@ -1228,10 +1262,20 @@ def relative_mutual_information(seq1, seq2):
     is_null_either = is_null_u | is_null_v
     u_ = u[~is_null_either]
     v_ = v[~is_null_either]
-    eu_ = sklearn.metrics.cluster.supervised.entropy(u_)
-    ev_ = sklearn.metrics.cluster.supervised.entropy(v_)
+
+    classes  = np.unique(u_)
+    clusters = np.unique(v_)
+    # Special limit cases: no clustering since the data is not split.
+    # This is a perfect match hence return 1.0.
+    if (classes.shape[0] == clusters.shape[0] == 1 or classes.shape[0] == clusters.shape[0] == 0):
+        return 1.0
+
+    eps = np.finfo(np.float64).eps
+    eu_ = np.max([sklearn.metrics.cluster.supervised.entropy(u_), eps])
+    ev_ = np.max([sklearn.metrics.cluster.supervised.entropy(v_), eps])
     mi_ = sklearn.metrics.mutual_info_score(u_, v_)
     # print('{},{},{}'.format(eu_,ev_,mi_))
+
     rmu_ = np.max([mi_ / eu_, mi_ / ev_])
     return rmu_
 
