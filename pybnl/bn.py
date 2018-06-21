@@ -518,7 +518,7 @@ class ExactInferenceImputer(sklearn.base.BaseEstimator, sklearn.base.Transformer
                 levels = list(answer.keys())
                 probabilities = [answer[level] for level in levels]
                 # print('node: {}, levels: {}, probabilities: {}'.format(node, levels, probabilities))
-                imputed_value =  rs.choice(levels,1,probabilities)[0]
+                imputed_value =  rs.choice(levels,1, p=probabilities)[0]
                 # print('node: {}, levels: {}, probabilities: {}: impute_value: {}'.format(node, levels, probabilities, impute_value))
                 imputed_values += [imputed_value]
 
