@@ -815,10 +815,9 @@ class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         self.generate_fit()
         return self
 
-class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
-
+class StructuralEMNetFromDataDiscreteBayesNetworkBase(LearningBayesNetworkBase):
     def __init__(self, ldf=None):
-        super(StructuralEMNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+        super().__init__(ldf)
         self.latent_names = identify_latent_variables(self.df)
         if len(self.latent_names) == 0:
             raise ValueError('Expecting a dataframe with some latent variables, but does not contain any!')
@@ -827,13 +826,19 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
             levels = levels_of_latent_variable(self.df, ln)
             self.latent_levels[ln] = levels
 
+    def sem_fit_base(self, X=None, y=None, seed=None):
+        super().fit(X=X, y=y, seed=seed)
+        r_df = pydf_to_factorrdf(self.df)
+        imputed = self.sem_generate_inital_impute()
+        f = self.sem_generate_inital_fit(imputed, seed)
+        whitelist = self.sem_generate_whitelist()
+        return (r_df, imputed, f, whitelist)
+
     # https://docs.python.org/3/library/random.html
     # random.choices(): with replacement
     # random.sample(): without replacement
-    def fit(self, X=None, y=None, seed=None):
-        super(StructuralEMNetFromDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
+    def sem_generate_inital_impute(self):
         imputed = self.df.copy()
-        r_df = pydf_to_factorrdf(self.df)
 
         k = len(self.df)
         for ln in self.latent_names:
@@ -841,7 +846,9 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
             random.seed(global_default_random_seed_init)
             imputed.loc[:,ln] = random.choices(levels,k=k)
             imputed[ln] = imputed[ln].astype(self.df[ln].dtype)
+        return imputed
 
+    def sem_generate_inital_fit(self, imputed, seed):
         # fitted = bn.fit(empty.graph(names(ldmarks)), imputed)
         f = NetAndDataDiscreteBayesNetwork(imputed, rnet=empty_graph(imputed.columns))
         f.fit(seed=seed)
@@ -850,24 +857,85 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         for ln in self.latent_names:
             levels = self.latent_levels[ln]
             count = len(levels)
-            a = np.full([count], float(1/count))
+            a = np.full([count], float(1 / count))
             dimnames = rpy2.robjects.r['list'](rpy2.robjects.StrVector(levels))
-            ra = rpy2.robjects.r['array'](a, dim=count,dimnames=dimnames)
+            ra = rpy2.robjects.r['array'](a, dim=count, dimnames=dimnames)
             idx = list(imputed.columns).index(ln)
             prob_idx = list(f.rfit[idx].names).index('prob')
             f.rfit[idx][prob_idx] = ra
 
+        return f
+
+    def sem_generate_whitelist(self):
         wl = set(itertools.product(self.latent_names, self.df.columns))
         wl_substract = set(zip(self.df.columns, self.df.columns))
-        whitelist = pd.DataFrame(list(wl - wl_substract),columns=['from', 'to']).sort_values(['from','to'])
+        whitelist = pd.DataFrame(list(wl - wl_substract), columns=['from', 'to']).sort_values(['from','to'])
+        return whitelist
+
+    def score(self, Xt=None, y=None, type = 'bic'):
+        return self.structure().score(self.imputed_, type=type)
+
+
+class StructuralEMNetFromDataDiscreteBayesNetwork(StructuralEMNetFromDataDiscreteBayesNetworkBase):
+
+    def __init__(self, ldf=None):
+        super().__init__(ldf)
+
+    # https://docs.python.org/3/library/random.html
+    # random.choices(): with replacement
+    # random.sample(): without replacement
+    def fit(self, X=None, y=None, seed=None):
+        super().fit(X=X, y=y, seed=seed)
+        r_df, imputed, f, whitelist = super().sem_fit_base(X=X, y=y, seed=seed)
+
+        rstructuralemfn = rpy2.robjects.r('structural.em')
+        rlistfn         = rpy2.robjects.r('list')
+
+        rmaximizeargs_in = {
+            'whitelist': whitelist
+        }
+        rmaximizeargs = rlistfn(**rmaximizeargs_in)
+
+        remaining_args = {
+            'maximize.args': rmaximizeargs,
+            'max.iter': 15,
+            'return.all': True
+        }
+
+        # XXX implementation based on bnlearn::structural.em
+        # r = structural.em(ldmarks, fit="bayes", impute="bayes-lw", start=fitted, maximize.args = list(whitelist=data.frame( from = "LAT", to = names(dmarks2))), return.all = TRUE)
+        r = rstructuralemfn(r_df, fit="bayes", impute="bayes-lw", start=f.rfit, **remaining_args) # maximize.args = list(whitelist=data.frame( from = "LAT", to = names(dmarks2))), return.all = TRUE
+        # r$dag (an object of class bn),
+        # r$imputed (a data frame containing the imputed data from the last iteration) and
+        # r$fitted
+        # self.r_ = r
+
+        self.rfit = r.rx('fitted')[0]
+        self.rnet = r.rx('dag')[0] # rfit2rnet(self.rfit)
+        rcompilefn = rpy2.robjects.r['compile']
+        rasgrainfn = rpy2.robjects.r['as.grain']
+        self.grain = rcompilefn(rasgrainfn(self.rfit))
+
+        self.imputed_ = factorrdf_to_pydf(r.rx('imputed')[0])
+
+        return self
+
+
+
+class PyStructuralEMNetFromDataDiscreteBayesNetwork(StructuralEMNetFromDataDiscreteBayesNetworkBase):
+
+    def __init__(self, ldf=None):
+        super().__init__(ldf)
+
+    def fit(self, X=None, y=None, seed=None):
+        super().fit(X=X, y=y, seed=seed)
+        r_df, imputed, f, whitelist = super().sem_fit_base(X=X, y=y, seed=seed)
 
         for i in range(15):
             # expectation step.
-            # set.seed(12345)
-            im = Imputer(f, self.df)
+            im = ExactInferenceImputer(f, self.df)
             imputed = im.fit_transform(X=None, r_df=r_df, seed=seed)
-            # imputed_ = rpy2.robjects.r('impute')(f.rfit, r_df, method='bayes-lw')
-            # imputed = factorrdf_to_pydf(imputed_)
+
             # maximisation step
             f_new = ScoreBasedNetFromDataDiscreteBayesNetwork(imputed, whitelist=whitelist)
             f_new.fit()
@@ -878,27 +946,6 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
         print(i)
 
-
-        # for (i in 1:15) {
-        #     # expectation step.
-        #     imputed = impute(fitted, ldmarks, method = "bayes-lw")
-        #     # maximisation step (forcing LAT to be connected to the other nodes).
-        #     dag = hc(imputed, whitelist = data.frame(from = "LAT", to = names(dmarks2)))
-        #     fitted.new = bn.fit(dag, imputed, method = "bayes")
-        #
-        #
-        #     if (isTRUE(all.equal(fitted, fitted.new))) {
-        #       print(c("i: ", i))
-        #       break
-        #     } else {
-        #       fitted = fitted.new
-        #     }
-        # }#FOR
-        # print(score(dag,data=imputed,type="bic"))
-        # modelstring(fitted)
-
-        # for i in range(15):
-
         self.rfit = f.rfit
         self.rnet = rfit2rnet(self.rfit)
         rcompilefn = rpy2.robjects.r['compile']
@@ -908,9 +955,6 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         self.imputed_ = imputed
 
         return self
-
-    def score(self, Xt=None, y=None, type = 'bic'):
-        return self.structure().score(self.imputed_, type=type)
 
 # http://www.bnlearn.com/documentation/man/hybrid.html
 # rsmax2(rdf_lt, restrict = "si.hiton.pc", restrict.args = list(test = "x2", alpha = 0.01), maximize = "tabu", maximize.args = list(score = "bic", tabu = 10))
