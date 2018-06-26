@@ -7,7 +7,7 @@ import networkx as nx, networkx.algorithms.dag, graphviz
 import sklearn.base, sklearn.metrics, sklearn.metrics.cluster
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
-import itertools, collections, tempfile, random
+import itertools, collections, tempfile, random, math
 import warnings, re
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
@@ -1070,6 +1070,27 @@ def convert_xarray_dataset_to_pandas_dtcpm_dict(ds):
 
     return rpd
 
+def rmatrix_to_xarray(rmatrix):
+    dims = rmatrix.names  # map from dim to levels
+    # print(dims)
+    coords = {}
+    dim_names = []
+    if len(dims) == 1:
+        dname = 'dimension_0'
+        dim_names += [dname]
+        levels = list(dims[0])
+        coords.update({dname: levels})
+    else:
+        for dname in dims.names:
+            dim_names += [dname]
+            levels = list(dims.rx(dname)[0])
+            coords.update({dname: levels})
+    values = rpy2.robjects.pandas2ri.ri2py(rmatrix)
+
+    ar = xr.DataArray(values, dims=dim_names, coords=coords)
+    return ar
+
+
 def convert_to_xarray_dataset(rfit):
     rnodesfn = rpy2.robjects.r['nodes']
     nodes = list(rnodesfn(rfit))
@@ -1205,6 +1226,20 @@ def rnet2dag(rnet):
 
     return nodes, unidirectional_edges, []
 
+def from_to_df(rnet):
+    _, unidirectional_edges, _ = rnet2dag(rnet)
+    ldf = pd.DataFrame(columns=['from', 'to'])
+    for i, edge in enumerate(unidirectional_edges):
+        ldf.loc[i] = edge
+    return ldf
+
+def joint_probability_distribution(bn_base, nodes):
+    rquerygrain = rpy2.robjects.r('querygrain')
+    rnodes = rpy2.robjects.StrVector(nodes)
+    r = rquerygrain(bn_base.grain, rnodes, type = "joint")
+    xr = rmatrix_to_xarray(r)
+    return xr
+
 def vstructs(bn):
     rvstructsfn  = rpy2.robjects.r('vstructs')
     rvstructs = rvstructsfn(bn) # bn.rfit
@@ -1297,8 +1332,7 @@ def contingency_matrix(labels_true, labels_pred, eps=None, sparse=False):
             contingency = contingency + eps
     return contingency
 
-
-def relative_mutual_information(seq1, seq2):
+def relative_mutual_information_(seq1, seq2):
     u = convert_to_categorical_series(seq1)
     v = convert_to_categorical_series(seq2)
     is_null_u = pd.isnull(u)
@@ -1319,7 +1353,10 @@ def relative_mutual_information(seq1, seq2):
     ev_ = np.max([sklearn.metrics.cluster.supervised.entropy(v_), eps])
     mi_ = sklearn.metrics.mutual_info_score(u_, v_)
     # print('{},{},{}'.format(eu_,ev_,mi_))
+    return mi_, eu_, ev_
 
+def relative_mutual_information(seq1, seq2):
+    mi_, eu_, ev_ = relative_mutual_information_(seq1, seq2)
     rmu_ = np.max([mi_ / eu_, mi_ / ev_])
     return rmu_
 
@@ -1372,3 +1409,74 @@ def convert_interval_index_categories_to_string_categories(ldf, inplace=True):
         ldf.loc[:,column] = ldf[column].apply(lambda x: str(x)).astype(cdt)
 
     return ldf
+
+def entropy(pi):
+    pi = pi[pi > 0]
+    pi_sum = np.sum(pi)
+    # log(a / b) should be calculated as log(a) - log(b) for
+    # possible loss of precision
+    return -np.sum((pi / pi_sum) * (np.log(pi) - math.log(pi_sum)))
+
+def mutual_information_from_joint_distribution(xr_distribution):
+    contingency = xr_distribution.values
+    nzx, nzy = np.nonzero(contingency)
+    nz_val = contingency[nzx, nzy]
+
+    pi = np.ravel(contingency.sum(axis=1))
+    pj = np.ravel(contingency.sum(axis=0))
+    contingency_nm = nz_val
+    log_contingency_nm = np.log(contingency_nm)
+    outer = pi.take(nzx) * pj.take(nzy)
+    log_outer = -np.log(outer)  # + math.log(pi.sum()) + math.log(pj.sum())
+    mi = (contingency_nm * log_contingency_nm + contingency_nm * log_outer)
+    return mi.sum(), entropy(pi), entropy(pj)
+
+def from_to_mutual_information_infos(bn_base, frm_to):
+    jpd_xr = joint_probability_distribution(bn_base, frm_to)
+
+    # in principle this information could be also calculated via:
+    #   relative_mutual_information_(ddf_without_null_values[frm], ddf_without_null_values[to])
+    # but this would only be valid if you have data without null values.
+    # If you use parametric or structural EM you will retrieve probability distributions, that may be different than the estimate from the data without null values
+    mi, ei, ej = mutual_information_from_joint_distribution(jpd_xr)
+    if np.isclose(ei,0.0) and np.isclose(ej,0.0):
+        rmi_i = rmi_j = 1.0
+    elif np.isclose(ei,0.0):
+        rmi_i = 0.0
+        rmi_j = mi / ej
+    elif np.isclose(ej,0.0):
+        rmi_i = mi / ei
+        rmi_j = 0.0
+    else:
+        rmi_i = mi / ei
+        rmi_j = mi / ej
+
+    nmi     = np.sqrt(rmi_i * rmi_j) # normalized mututal information : the geometric mean
+    max_rmi = np.max([rmi_i, rmi_j])
+
+    return mi, ei, ej, rmi_i , rmi_j, nmi, max_rmi
+
+def bn_arcs_mutual_information_infos(bn_base, short_column_names_p=False):
+    if short_column_names_p:
+        column_names = ['frm', 'to', 'mi', 'ef', 'et', 'rmif', 'rmit', 'nmi', 'mmi']
+    else:
+        column_names = ['from', 'to', 'mutual_information', 'entropy_from', 'entropy_to', 'relative_mutual_information_from', 'relative_mutual_information_to',
+                        'normalized_mutual_information', 'max_mutual_information']
+    ldf = pd.DataFrame(columns=column_names)
+    frm_to_df = from_to_df(bn_base.rnet)
+    for index, row in frm_to_df.iterrows():
+        lrow = list(row)
+        frm, to = lrow
+        ldf.loc[index] = [frm, to] + list(from_to_mutual_information_infos(bn_base, lrow))
+    return ldf
+
+def bn_arcs_strengths(bn_base, ldf=None, criterion='loglik'):
+    if ldf is None:
+        ldf = bn_base.df
+    if ldf is None:
+        raise RuntimeError('You did neither provide an input value for ldf nor does the network contain a df value!')
+
+    rarcstrengthfn = rpy2.robjects.r('arc.strength')
+    rdf = rarcstrengthfn(bn_base.rnet, ldf, criterion=criterion)
+    return rpy2.robjects.pandas2ri.ri2py(rdf).sort_values(['strength'], ascending=True)
+
