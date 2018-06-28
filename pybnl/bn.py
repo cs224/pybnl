@@ -247,18 +247,15 @@ class BayesNetworkBase():
 
     def arc_strength_info(self, criterion='loglik'):
         arc_mi_df        = bn_arcs_mutual_information_infos(self)
-        arc_strengths_df = bn_arcs_strengths(self, criterion='loglik')
-        # columns = ['from', 'to', 'relative_mutual_information_from', 'relative_mutual_information_to', 'normalized_mutual_information', 'max_mutual_information']
+        arc_strengths_df = bn_arcs_strengths(self, criterion=criterion)
         ldf = pd.merge(arc_strengths_df, arc_mi_df, on=['from', 'to'])[['from', 'to', 'strength', 'relative_mutual_information_from', 'relative_mutual_information_to']]
         ldf.rename(columns={'relative_mutual_information_from': 'rmif', 'relative_mutual_information_to': 'rmit'}, inplace=True)
         max_strength = ldf.strength.min()
         ldf['rs'] = ldf.strength / max_strength
         return ldf[['from', 'to', 'strength', 'rs', 'rmif', 'rmit']]
 
-    def dot(self, engine='fdp'):
-        return dot_with_arc_strength_info(*rnet2dag(self.rnet), self.arc_strength_info(), engine=engine)
-        # display(HTML(rdot._repr_svg_()))
-        # return dot(*rnet2dag(self.rnet), engine=engine)
+    def dot(self, engine='fdp', criterion='loglik'):
+        return dot_with_arc_strength_info(*rnet2dag(self.rnet), self.arc_strength_info(criterion=criterion), engine=engine)
 
 
 class CustomDiscreteBayesNetwork(BayesNetworkBase):
@@ -1537,3 +1534,7 @@ def bn_arcs_strengths(bn_base, ldf=None, criterion='loglik'):
     rdf = rarcstrengthfn(bn_base.rnet, ldf, criterion=criterion)
     return rpy2.robjects.pandas2ri.ri2py(rdf).sort_values(['strength'], ascending=True)
 
+# https://stackoverflow.com/questions/30510562/get-mapping-of-categorical-variables-in-pandas
+# https://pandas.pydata.org/pandas-docs/stable/generated/pandas.Categorical.from_codes.html
+def from_codes_to_category(codes, cat_dtype):
+    return pd.Categorical.from_codes(codes, cat_dtype.categories, ordered=cat_dtype.ordered)
