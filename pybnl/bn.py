@@ -245,6 +245,22 @@ class BayesNetworkBase():
             ldf = self.df
         return self.structure().bf(other.structure(), ldf)
 
+    def arc_strength_info(self, criterion='loglik'):
+        arc_mi_df        = bn_arcs_mutual_information_infos(self)
+        arc_strengths_df = bn_arcs_strengths(self, criterion='loglik')
+        # columns = ['from', 'to', 'relative_mutual_information_from', 'relative_mutual_information_to', 'normalized_mutual_information', 'max_mutual_information']
+        ldf = pd.merge(arc_strengths_df, arc_mi_df, on=['from', 'to'])[['from', 'to', 'strength', 'relative_mutual_information_from', 'relative_mutual_information_to']]
+        ldf.rename(columns={'relative_mutual_information_from': 'rmif', 'relative_mutual_information_to': 'rmit'}, inplace=True)
+        max_strength = ldf.strength.min()
+        ldf['rs'] = ldf.strength / max_strength
+        return ldf[['from', 'to', 'strength', 'rs', 'rmif', 'rmit']]
+
+    def dot(self, engine='fdp'):
+        return dot_with_arc_strength_info(*rnet2dag(self.rnet), self.arc_strength_info(), engine=engine)
+        # display(HTML(rdot._repr_svg_()))
+        # return dot(*rnet2dag(self.rnet), engine=engine)
+
+
 class CustomDiscreteBayesNetwork(BayesNetworkBase):
 
     def __init__(self, ldf_list, xrds=None):
@@ -1278,6 +1294,47 @@ def dot(nodes, unidirectional_edges, bidirectional_edges, engine='fdp', graph_na
 
     for edge in bidirectional_edges:
         dg_dot.edge(edge[0], edge[1], dir='none')
+
+    return dg_dot
+
+# https://stackoverflow.com/questions/2333025/graphviz-changing-the-size-of-edge
+def generate_graphviz_attributes(edge, arc_strength_info):
+    info = arc_strength_info[(arc_strength_info['from'] == edge[0]) & (arc_strength_info['to'] == edge[1])]
+    weight_multiplier_1 = 4.0 * 1.0
+    weight_multiplier_2 = 4.0
+    attributes = {
+        'weight'   : '{0:.2f}'.format(float(info['rs']) * weight_multiplier_1),
+        # 'len'      :  '{0:.2f}'.format(1/float(info['rs'])),
+        'penwidth' : '{0:.2f}'.format(float(info['rs']) * weight_multiplier_2),
+        # 'arrowsize': '{0:.2f}'.format(float(info['rs']) * weight_multiplier_2),
+        'taillabel': '{0:3.1f}'.format(info['rmif'].values[0] * 100.0), # {0:0>3}
+        'headlabel': '{0:3.1f}'.format(info['rmit'].values[0] * 100.0),
+        # 'label'    : '{0:3.1f} -> {0:3.1f}'.format(info['rmif'].values[0] * 100.0, info['rmit'].values[0] * 100.0),
+        # 'label': '{0:3.1f}'.format(info['rmif'].values[0] * 100.0),
+    }
+    return attributes
+
+
+def dot_with_arc_strength_info(nodes, unidirectional_edges, bidirectional_edges, arc_strength_info, engine='fdp', graph_name='graph', cut_pct=0.2):
+    dg_dot = graphviz.Digraph(engine=engine, comment=graph_name)
+
+    for node in nodes:
+        dg_dot.node(node)
+
+    for _, row in arc_strength_info.iterrows():
+        frm = row['from']
+        to  = row['to']
+        edge = (frm, to)
+        gvattrs =  generate_graphviz_attributes(edge, arc_strength_info)
+        dg_dot.edge(frm, to, **gvattrs)
+
+    # for edge in unidirectional_edges:
+    #     gvattrs =  generate_graphviz_attributes(edge, arc_strength_info)
+    #     dg_dot.edge(edge[0], edge[1], **gvattrs)
+    #
+    # for edge in bidirectional_edges:
+    #     gvattrs =  generate_graphviz_attributes(edge, arc_strength_info)
+    #     dg_dot.edge(edge[0], edge[1], dir='none', **gvattrs)
 
     return dg_dot
 
