@@ -9,6 +9,7 @@ from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
 import itertools, collections, tempfile, random, math
 import warnings, re
+import tqdm
 
 import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
     rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
@@ -169,11 +170,12 @@ class BayesNetworkStructure():
 
 class BayesNetworkBase():
 
-    def __init__(self):
-        self.df    = None
-        self.rnet  = None
-        self.rfit  = None
-        self.grain = None
+    def __init__(self, predict_var=None):
+        self.df          = None
+        self.rnet        = None
+        self.rfit        = None
+        self.grain       = None
+        self.predict_var = predict_var
 
     def exact_query(self, evidence, nodes, only_python_result=True):
         evidence_nodes = evidence.keys()
@@ -257,10 +259,32 @@ class BayesNetworkBase():
     def dot(self, engine='fdp', criterion='loglik'):
         return dot_with_arc_strength_info(*rnet2dag(self.rnet), self.arc_strength_info(criterion=criterion), engine=engine)
 
+    def predict(self, X):
+        if self.predict_var is None:
+            raise RuntimeError('The predict_var has no value!')
+        X = sklearn_fit_helper_transform_X(X)
+        if set(list(X.columns) + [self.predict_var]) != set(self.df.columns):
+            raise RuntimeError('The predict data-frame plus the predict_var do not match the fitted data-frame!')
+
+        l = len(X)
+        cdt = self.df[self.predict_var].dtype
+        y = pd.Series(name=self.predict_var, index=X.index)
+        for i in tqdm.tqdm(range(l)):
+            idx = X.index[i]
+            row = X.loc[idx]
+        # for idx, row in X.iterrows():
+            evidence = dict(zip(X.columns, row))
+            r = self.exact_query(evidence, [self.predict_var], only_python_result=True)
+            y.loc[idx] =  pd.Series(r[self.predict_var]).idxmax()
+
+        return y.astype(cdt)
+
 
 class CustomDiscreteBayesNetwork(BayesNetworkBase):
 
-    def __init__(self, ldf_list, xrds=None):
+    def __init__(self, ldf_list, xrds=None, predict_var=None):
+        super().__init__(predict_var)
+
         if xrds is not None:
             self.dtcpm_list = [DiscreteTabularCPM(None, lcpm_xr=xrds[lcpm_xr_var]) for lcpm_xr_var in xrds.data_vars]
         else:
@@ -387,7 +411,7 @@ def sklearn_fit_helper_transform_X(X):
         column_names = ['X{}'.format(i) for i in range(X.shape[1])]
         ldf = pd.DataFrame(X, columns=column_names)
     else:
-        raise ValueError('Only accepting pandas ')
+        raise ValueError('Only accepting pandas dataframe or np.ndarray as input')
 
     validate_node_or_level_names(X.columns)
 
@@ -396,6 +420,22 @@ def sklearn_fit_helper_transform_X(X):
         raise RuntimeError("X has invalid shape!")
     return ldf
 
+def sklearn_fit_helper_transform_y(y):
+    lds = None
+    # if isinstance(l,(list,pd.core.series.Series,np.ndarray)):
+    if isinstance(y, pd.Series):
+        lds = y
+    elif isinstance(y, np.ndarray):
+        lds = pd.Series(y, name='y')
+    else:
+        raise ValueError('Only accepting pandas series or np.ndarray as input')
+
+    validate_node_or_level_names([lds.name])
+
+    # check_array(ldf)
+    if len(lds.shape) != 1:
+        raise RuntimeError("y has invalid shape!")
+    return lds
 
 # https://stats.stackexchange.com/questions/5253/how-do-i-get-the-number-of-rows-of-a-data-frame-in-r
 # https://stackoverflow.com/questions/14808945/check-if-variable-is-dataframe
@@ -603,7 +643,8 @@ def check_dtype_categorical(ldf):
             raise ValueError('Dataframe needs to contain only categorical data columns and the categories have to be string values! column: {}'.format(column))
 
 class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
-    def __init__(self, ldf):
+    def __init__(self, ldf, predict_var=None):
+        super().__init__(predict_var)
         if ldf is not None:
             validate_node_or_level_names(ldf.columns)
         self.df = ldf
@@ -618,6 +659,10 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
 
         if X is not None:
             self.df = sklearn_fit_helper_transform_X(X)
+
+        if y is not None:
+            y  = sklearn_fit_helper_transform_y(y)
+            self.df[y.name] = y
 
         if self.df is None:
             raise RuntimeError('You either have to specify the data frame when you call the constructur (the ldf parameter) or when you call the fit (the X parameter) method!')
@@ -661,8 +706,8 @@ def digraph2netstruct(dg):
 
 class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf=None, dg=None, model_string=None, rnet=None):
-        super(NetAndDataDiscreteBayesNetwork, self).__init__(ldf)
+    def __init__(self, ldf=None, dg=None, model_string=None, rnet=None, predict_var=None):
+        super().__init__(ldf, predict_var=predict_var)
         self.dg = dg
         self.model_string = model_string
         self.rnet = rnet
@@ -706,8 +751,8 @@ class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 # https://github.com/jacintoArias/bayesnetRtutorial/blob/master/index.Rmd
 class ParametricEMNetAndDataDiscreteBayesNetwork(NetAndDataDiscreteBayesNetwork):
 
-    def __init__(self, ldf=None, dg=None, model_string=None, rnet=None, discrete_variable_identification_cutoff=30):
-        super(ParametricEMNetAndDataDiscreteBayesNetwork, self).__init__(ldf=ldf, dg=dg, model_string=model_string, rnet=rnet)
+    def __init__(self, ldf=None, dg=None, model_string=None, rnet=None, discrete_variable_identification_cutoff=30, predict_var=None):
+        super().__init__(ldf=ldf, dg=dg, model_string=model_string, rnet=rnet, predict_var=predict_var)
 
         _, discrete_with_null, continuous_non_null, continuous_with_null, _ = discrete_and_continuous_variables_with_and_without_nulls(ldf, cutoff=discrete_variable_identification_cutoff)
         if len(continuous_non_null) > 0 or len(continuous_with_null) > 0:
@@ -782,8 +827,8 @@ def constrained_base_structure_learning_si_hiton_pc(ldf, test="mc-mi", undirecte
 # si.hiton.pc(x, cluster = NULL, whitelist = NULL, blacklist = NULL, test = NULL, alpha = 0.05, B = NULL, max.sx = NULL, debug = FALSE, optimized = FALSE, strict = FALSE, undirected = TRUE)
 class ConstraintBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf=None, algorithm='HITON-PC'):
-        super(ConstraintBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+    def __init__(self, ldf=None, predict_var=None, algorithm='HITON-PC'):
+        super().__init__(ldf, predict_var=predict_var)
         self.algorithmfn = None
         if algorithm == 'HITON-PC':
             self.algorithmfn = lambda ldf: constrained_base_structure_learning_si_hiton_pc(ldf)
@@ -815,8 +860,8 @@ def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart
 
 class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf=None, algorithm='hc', whitelist=None):
-        super(ScoreBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+    def __init__(self, ldf=None, predict_var=None, algorithm='hc', whitelist=None):
+        super().__init__(ldf, predict_var=predict_var)
         self.algorithmfn = None
         if algorithm == 'hc':
             self.algorithmfn = lambda ldf: score_base_structure_learning_hill_climbing(ldf, whitelist=whitelist)
@@ -891,8 +936,8 @@ class StructuralEMNetFromDataDiscreteBayesNetworkBase(LearningBayesNetworkBase):
 
 class StructuralEMNetFromDataDiscreteBayesNetwork(StructuralEMNetFromDataDiscreteBayesNetworkBase):
 
-    def __init__(self, ldf=None):
-        super().__init__(ldf)
+    def __init__(self, ldf=None, predict_var=None):
+        super().__init__(ldf, predict_var=predict_var)
 
     # https://docs.python.org/3/library/random.html
     # random.choices(): with replacement
@@ -937,8 +982,8 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(StructuralEMNetFromDataDiscret
 
 class PyStructuralEMNetFromDataDiscreteBayesNetwork(StructuralEMNetFromDataDiscreteBayesNetworkBase):
 
-    def __init__(self, ldf=None):
-        super().__init__(ldf)
+    def __init__(self, ldf=None, predict_var=None):
+        super().__init__(ldf, predict_var=predict_var)
 
     def fit(self, X=None, y=None, seed=None):
         super().fit(X=X, y=y, seed=seed)
@@ -1040,8 +1085,8 @@ def hybrid_structure_learning_rxmax2_sihitonpc_tabu(ldf):
 
 class HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
-    def __init__(self, ldf=None, algorithm='mmhc'):
-        super(HybridScoreAndConstainedBasedNetFromDataDiscreteBayesNetwork, self).__init__(ldf)
+    def __init__(self, ldf=None, predict_var=None, algorithm='mmhc'):
+        super().__init__(ldf, predict_var=predict_var)
         self.algorithmfn = None
         if algorithm == 'mmhc':
             self.algorithmfn = lambda ldf: hybrid_structure_learning_mmhc(ldf)

@@ -206,6 +206,7 @@ setup(
         'pgmpy>=0.1.6',
         'graphviz>=0.8.3',
         'xarray>=0.10.3',
+        'tqdm>=4.23.4',
     ],  # Optional
 
     # List additional groups of dependencies here (e.g. development
