@@ -658,11 +658,12 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
             rsetseed(seed=seed)
 
         if X is not None:
-            self.df = sklearn_fit_helper_transform_X(X)
+            self.X_ = sklearn_fit_helper_transform_X(X)
+            self.df = self.X_.copy()
 
         if y is not None:
-            y  = sklearn_fit_helper_transform_y(y)
-            self.df[y.name] = y
+            self.y_  = sklearn_fit_helper_transform_y(y)
+            self.df[y.name] = self.y_
 
         if self.df is None:
             raise RuntimeError('You either have to specify the data frame when you call the constructur (the ldf parameter) or when you call the fit (the X parameter) method!')
@@ -744,9 +745,68 @@ class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         self.rnet = model2network(r_model_string)
 
     def fit(self, X=None, y=None, seed=None):
-        super(NetAndDataDiscreteBayesNetwork, self).fit(X=X, y=y, seed=seed)
+        super().fit(X=X, y=y, seed=seed)
         self.generate_fit()
         return self
+
+class MultinomialNB(LearningBayesNetworkBase):
+    def __init__(self):
+        super().__init__(ldf=None, predict_var=None)
+
+    def fit(self, X, y, seed=None):
+        super().fit(X=X, y=y, seed=seed)
+        rnaivebayesfn = rpy2.robjects.r('naive.bayes')
+
+        self.rnet = rnaivebayesfn(self.df, self.y_.name, self.X_.columns)
+        # tmp_rnet$learning$args$training
+        self.predict_var = self.y_.name
+        self.generate_fit()
+
+        return self
+
+    def predict(self, X):
+        if self.predict_var is None:
+            raise RuntimeError('The predict_var has no value!')
+        X = sklearn_fit_helper_transform_X(X)
+        if set(list(X.columns) + [self.predict_var]) != set(self.df.columns):
+            raise RuntimeError('The predict data-frame plus the predict_var do not match the fitted data-frame!')
+
+        cdt = self.df[self.predict_var].dtype
+        rpredictfn = rpy2.robjects.r('predict')
+        r_df_in = pydf_to_factorrdf(X)
+        r_df_out = rpredictfn(self.rfit, r_df_in)
+        y = rpy2.robjects.pandas2ri.ri2py(r_df_out)
+
+        return y.astype(cdt)
+
+    def predict_proba(self, X):
+        if self.predict_var is None:
+            raise RuntimeError('The predict_var has no value!')
+        X = sklearn_fit_helper_transform_X(X)
+        if set(list(X.columns) + [self.predict_var]) != set(self.df.columns):
+            raise RuntimeError('The predict data-frame plus the predict_var do not match the fitted data-frame!')
+
+        cdt = self.df[self.predict_var].dtype
+        rpredictwithprobfn = rpy2.robjects.r(
+            '''
+            function(object, data) {
+                rout_ = predict(object, data, prob=TRUE, debug=FALSE)
+                rout = list(rout_, attributes(rout_)$prob)
+                rout
+            }
+            ''')
+
+        r_df_in = pydf_to_factorrdf(X)
+        r_out = rpredictwithprobfn(self.rfit, r_df_in)
+        r_df_out    = r_out[0]
+        r_proba_out = r_out[1]
+        y = rpy2.robjects.pandas2ri.ri2py(r_df_out).astype(cdt)
+
+        proba = pd.DataFrame(rpy2.robjects.pandas2ri.ri2py(r_proba_out).T, columns=list(r_proba_out.dimnames[0]), index=X.index)
+
+        return proba
+
+
 
 # https://github.com/jacintoArias/bayesnetRtutorial/blob/master/index.Rmd
 class ParametricEMNetAndDataDiscreteBayesNetwork(NetAndDataDiscreteBayesNetwork):
@@ -1577,7 +1637,9 @@ def bn_arcs_strengths(bn_base, ldf=None, criterion='loglik'):
 
     rarcstrengthfn = rpy2.robjects.r('arc.strength')
     rdf = rarcstrengthfn(bn_base.rnet, ldf, criterion=criterion)
-    return rpy2.robjects.pandas2ri.ri2py(rdf).sort_values(['strength'], ascending=True)
+    ldf = rpy2.robjects.pandas2ri.ri2py(rdf).sort_values(['strength'], ascending=True)
+    ldf.columns = ['from', 'to', 'strength']
+    return ldf
 
 # https://stackoverflow.com/questions/30510562/get-mapping-of-categorical-variables-in-pandas
 # https://pandas.pydata.org/pandas-docs/stable/generated/pandas.Categorical.from_codes.html
