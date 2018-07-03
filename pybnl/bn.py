@@ -771,13 +771,17 @@ class MultinomialNB(LearningBayesNetworkBase):
         if set(list(X.columns) + [self.predict_var]) != set(self.df.columns):
             raise RuntimeError('The predict data-frame plus the predict_var do not match the fitted data-frame!')
 
+        X = coerce_data_frame_types(X, self.df.iloc[:,:-1])
+
         cdt = self.df[self.predict_var].dtype
         rpredictfn = rpy2.robjects.r('predict')
         r_df_in = pydf_to_factorrdf(X)
         r_df_out = rpredictfn(self.rfit, r_df_in)
         y = rpy2.robjects.pandas2ri.ri2py(r_df_out)
+        y = y.astype(cdt)
+        y.index = X.index
 
-        return y.astype(cdt)
+        return y
 
     def predict_proba(self, X):
         if self.predict_var is None:
@@ -1645,3 +1649,41 @@ def bn_arcs_strengths(bn_base, ldf=None, criterion='loglik'):
 # https://pandas.pydata.org/pandas-docs/stable/generated/pandas.Categorical.from_codes.html
 def from_codes_to_category(codes, cat_dtype):
     return pd.Categorical.from_codes(codes, cat_dtype.categories, ordered=cat_dtype.ordered)
+
+
+def data_frame_data_type_diff(ldf1, ldf2):
+    l1 = len(ldf1.columns)
+    l2 = len(ldf2.columns)
+    if l1 != l2:
+        raise ValueError('The two data-frames have different lengths! {} != {}'.format(l1, l2))
+
+    for col1, col2 in zip(ldf1.columns, ldf2.columns):
+        if col1 != col2:
+            raise ValueError('The column names differ! {} != {}'.format(col1, col2))
+
+    column_datatype_diff_list = []
+    for col in ldf1.columns:
+        dt1 = ldf1[col].dtype
+        dt2 = ldf2[col].dtype
+        if dt1 != dt2:
+            column_datatype_diff_list += [col]
+            # raise ValueError('For column {} the data types differ! {} != {}'.format(col, dt1, dt2))
+
+        if dt1.name == 'category':
+            if (list(dt1.categories) != list(dt2.categories)) or (dt1.ordered != dt2.ordered):
+                column_datatype_diff_list += [col]
+
+    return column_datatype_diff_list
+
+def coerce_data_frame_types(input_df, pattern_df):
+    column_datatype_diff_list = data_frame_data_type_diff(input_df, pattern_df)
+    if column_datatype_diff_list: # list is not empty
+        output_df = input_df.copy()
+        for col in column_datatype_diff_list:
+            if (output_df[col].dtype.name == 'category') and isinstance(output_df[col].dtype.categories[0], str):
+                output_df[col] = output_df[col].astype(str).astype(pattern_df[col].dtype)
+            else:
+                output_df[col] = output_df[col].astype(pattern_df[col].dtype)
+        return output_df
+
+    return input_df
