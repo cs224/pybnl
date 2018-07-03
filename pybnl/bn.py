@@ -790,6 +790,8 @@ class MultinomialNB(LearningBayesNetworkBase):
         if set(list(X.columns) + [self.predict_var]) != set(self.df.columns):
             raise RuntimeError('The predict data-frame plus the predict_var do not match the fitted data-frame!')
 
+        X = coerce_data_frame_types(X, self.df.iloc[:,:-1])
+
         cdt = self.df[self.predict_var].dtype
         rpredictwithprobfn = rpy2.robjects.r(
             '''
