@@ -749,6 +749,26 @@ class NetAndDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         self.generate_fit()
         return self
 
+class SKLearnMultinomialNBWrapper(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+
+    def __init__(self, sklmnb=sklearn.naive_bayes.MultinomialNB()):
+        super().__init__()
+        self.sklmbn = sklmnb
+
+    def fit(self, X, y, sample_weight=None):
+        self.X = X
+        self.X_ = self.X.apply(lambda x: x.cat.codes, axis=0)
+        self.y = y
+        self.y_ = self.y.cat.codes
+        self.sklmbn.fit(self.X_, self.y_, sample_weight)
+        return self
+
+    def predict(self, X):
+        X_ = X.apply(lambda x: x.cat.codes, axis=0)
+        y_ = self.sklmbn.predict(X_)
+        return from_codes_to_category(y_, self.y.dtype)
+
+
 class MultinomialNB(LearningBayesNetworkBase):
     def __init__(self):
         super().__init__(ldf=None, predict_var=None)
@@ -757,7 +777,8 @@ class MultinomialNB(LearningBayesNetworkBase):
         super().fit(X=X, y=y, seed=seed)
         rnaivebayesfn = rpy2.robjects.r('naive.bayes')
 
-        self.rnet = rnaivebayesfn(self.df, self.y_.name, self.X_.columns)
+        self.r_df_ = pydf_to_factorrdf(self.df)
+        self.rnet = rnaivebayesfn(self.r_df_, self.y_.name, self.X_.columns)
         # tmp_rnet$learning$args$training
         self.predict_var = self.y_.name
         self.generate_fit()
@@ -1650,7 +1671,7 @@ def bn_arcs_strengths(bn_base, ldf=None, criterion='loglik'):
 # https://stackoverflow.com/questions/30510562/get-mapping-of-categorical-variables-in-pandas
 # https://pandas.pydata.org/pandas-docs/stable/generated/pandas.Categorical.from_codes.html
 def from_codes_to_category(codes, cat_dtype):
-    return pd.Categorical.from_codes(codes, cat_dtype.categories, ordered=cat_dtype.ordered)
+    return pd.Series(pd.Categorical.from_codes(codes, cat_dtype.categories, ordered=cat_dtype.ordered))
 
 
 def data_frame_data_type_diff(ldf1, ldf2):
