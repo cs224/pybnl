@@ -799,7 +799,7 @@ class MultinomialNB(LearningBayesNetworkBase):
         r_df_in = pydf_to_factorrdf(X)
         r_df_out = rpredictfn(self.rfit, r_df_in)
         y = rpy2.robjects.pandas2ri.ri2py(r_df_out)
-        y = y.astype(cdt)
+        y = pd.Series(y).astype(cdt)
         y.index = X.index
 
         return y
