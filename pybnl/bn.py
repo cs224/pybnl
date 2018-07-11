@@ -753,19 +753,19 @@ class SKLearnMultinomialNBWrapper(sklearn.base.BaseEstimator, sklearn.base.Trans
 
     def __init__(self, sklmnb=sklearn.naive_bayes.MultinomialNB()):
         super().__init__()
-        self.sklmbn = sklmnb
+        self.sklmnb = sklmnb
 
     def fit(self, X, y, sample_weight=None):
         self.X = X
         self.X_ = self.X.apply(lambda x: x.cat.codes, axis=0)
         self.y = y
         self.y_ = self.y.cat.codes
-        self.sklmbn.fit(self.X_, self.y_, sample_weight)
+        self.sklmnb.fit(self.X_, self.y_, sample_weight)
         return self
 
     def predict(self, X):
         X_ = X.apply(lambda x: x.cat.codes, axis=0)
-        y_ = self.sklmbn.predict(X_)
+        y_ = self.sklmnb.predict(X_)
         return from_codes_to_category(y_, self.y.dtype)
 
 
@@ -777,6 +777,7 @@ class MultinomialNB(LearningBayesNetworkBase):
         super().fit(X=X, y=y, seed=seed)
         rnaivebayesfn = rpy2.robjects.r('naive.bayes')
 
+        # print('{}'.format(self.df.Utilities.dtype.categories))
         self.r_df_ = pydf_to_factorrdf(self.df)
         self.rnet = rnaivebayesfn(self.r_df_, self.y_.name, self.X_.columns)
         # tmp_rnet$learning$args$training
