@@ -4,7 +4,7 @@ locale.setlocale(locale.LC_ALL, 'C')
 
 import numpy as np, xarray as xr, pandas as pd, scipy, scipy.sparse
 import networkx as nx, networkx.algorithms.dag, graphviz
-import sklearn.base, sklearn.metrics, sklearn.metrics.cluster
+import sklearn.base, sklearn.metrics, sklearn.metrics.cluster, sklearn.naive_bayes
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
 import itertools, collections, tempfile, random, math
