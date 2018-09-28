@@ -177,7 +177,7 @@ class BayesNetworkBase():
         self.grain       = None
         self.predict_var = predict_var
 
-    def exact_query(self, evidence, nodes, only_python_result=True):
+    def process_input_evidence(self, evidence, nodes=[]):
         evidence_nodes = evidence.keys()
         net_nodes = self.structure().nodes()
         for node in evidence_nodes:
@@ -199,6 +199,9 @@ class BayesNetworkBase():
             if value not in allowed_values:
                 raise RuntimeError('evidence node: {} value: {} does not exist in the categories: {}'.format(node, value, allowed_values))
 
+    def exact_query(self, evidence, nodes, only_python_result=True):
+        self.process_input_evidence(evidence, nodes)
+
         rlistfn = rpy2.robjects.r['list']
         rsetevidencefn = rpy2.robjects.r['setEvidence']
         rquerygrainfn = rpy2.robjects.r['querygrain']
@@ -219,6 +222,20 @@ class BayesNetworkBase():
             return result
         else:
             return result, rresult
+
+
+    def pevidence(self, evidence):
+        self.process_input_evidence(evidence)
+
+        rlistfn = rpy2.robjects.r['list']
+        rsetevidencefn = rpy2.robjects.r['setEvidence']
+        rpevidencefn = rpy2.robjects.r['pEvidence']
+
+        revidence = rlistfn(**evidence)
+        lgrain = rsetevidencefn(self.grain, evidence=revidence)
+        rresult = rpevidencefn(lgrain)
+        return rresult[0]
+
 
     def to_xrds(self):
         xrds,_ = convert_to_xarray_dataset(self.rfit)
