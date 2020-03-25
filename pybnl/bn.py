@@ -11,11 +11,25 @@ import itertools, collections, tempfile, random, math
 import warnings, re
 import tqdm
 
-import rpy2, rpy2.rinterface, rpy2.robjects, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
-    rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.interactive.process_revents, \
-    rpy2.interactive, rpy2.robjects.lib.grdevices, rpy2.rlike.container
+import rpy2, rpy2.rinterface, rpy2.robjects as ro, rpy2.robjects.packages, rpy2.robjects.lib, rpy2.robjects.lib.grid, \
+    rpy2.robjects.lib.ggplot2, rpy2.robjects.pandas2ri, rpy2.robjects.numpy2ri, rpy2.interactive.process_revents, \
+    rpy2.interactive, rpy2.robjects.lib.grdevices, rpy2.rlike.container, rpy2.robjects.conversion
 # rpy2.interactive.process_revents.start()
-rpy2.robjects.pandas2ri.activate()
+# rpy2.robjects.pandas2ri.activate()
+
+# https://stackoverflow.com/questions/55990529/module-rpy2-robjects-pandas2ri-has-no-attribute-ri2py
+# https://rpy2.github.io/doc/v3.2.x/html/pandas.html
+# with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+#     r_from_pd_df = ro.conversion.py2rpy(pd_df)
+#     pd_from_r_df = ro.conversion.rpy2py(r_df)
+
+# ri2py -> new interface
+# with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+#     pd_from_r_df = ro.conversion.rpy2py(r_df)
+
+# py2ri -> new interface
+# with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+#     r_from_pd_df = ro.conversion.py2rpy(pd_df)
 
 # import R's "base" package
 base = rpy2.robjects.packages.importr('base')
@@ -97,7 +111,7 @@ class DiscreteTabularCPM():
 
         # now create the R array
         rarray = rpy2.robjects.r['array'](
-            self.nparray,
+            ro.numpy2ri.numpy2rpy(self.nparray),
             dim=rdim_shape,
             dimnames=rpy2.robjects.r['list'](**dim_name_values_pair)
         )
@@ -402,7 +416,8 @@ def discretize(ldf, breaks=3, method='hartemink', ibreaks=5, idisc='quantile'):
 
     rpy2.robjects.globalenv[tmp_var_name_out] = rdiscretize(rpy2.robjects.globalenv[tmp_var_name_in], breaks=breaks, method=method, ibreaks=ibreaks, idisc=idisc)
     rdf_ = rpy2.robjects.globalenv[tmp_var_name_out]
-    rdf = rpy2.robjects.pandas2ri.ri2py(rdf_)
+    with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+        rdf = ro.conversion.rpy2py(rdf_)
 
     columns = rdf.columns
     for i, column in enumerate(columns):
@@ -481,7 +496,9 @@ class HarteminkBinTransformer(sklearn.base.BaseEstimator, sklearn.base.Transform
                 if not np.issubdtype(df[col].dtype, np.number):
                     continue
                 numeric_columns += [col]
-            r_df = rpy2.robjects.pandas2ri.py2ri(df[numeric_columns])
+
+            with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+                r_df = ro.conversion.py2rpy(df[numeric_columns])
 
         if self.ibreaks is None:
             rnrow       = rpy2.robjects.r['nrow']
@@ -664,6 +681,8 @@ class LearningBayesNetworkBase(BayesNetworkBase, sklearn.base.BaseEstimator, skl
         super().__init__(predict_var)
         if ldf is not None:
             validate_node_or_level_names(ldf.columns)
+        self.ldf = ldf
+        self.predict_var = predict_var
         self.df = ldf
         self.df_for_metadata = ldf
         # print('LearningBayesNetworkBase: pydf_to_factorrdf')
@@ -796,7 +815,9 @@ class MultinomialNB(LearningBayesNetworkBase):
 
         # print('{}'.format(self.df.Utilities.dtype.categories))
         self.r_df_ = pydf_to_factorrdf(self.df)
-        self.rnet = rnaivebayesfn(self.r_df_, self.y_.name, self.X_.columns)
+
+        with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+            self.rnet = rnaivebayesfn(self.r_df_, self.y_.name, ro.conversion.py2rpy(self.X_.columns))
         # tmp_rnet$learning$args$training
         self.predict_var = self.y_.name
         self.generate_fit()
@@ -816,7 +837,10 @@ class MultinomialNB(LearningBayesNetworkBase):
         rpredictfn = rpy2.robjects.r('predict')
         r_df_in = pydf_to_factorrdf(X)
         r_df_out = rpredictfn(self.rfit, r_df_in)
-        y = rpy2.robjects.pandas2ri.ri2py(r_df_out)
+
+        with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+            y = ro.conversion.rpy2py(r_df_out)
+
         y = pd.Series(y).astype(cdt)
         y.index = X.index
 
@@ -845,9 +869,10 @@ class MultinomialNB(LearningBayesNetworkBase):
         r_out = rpredictwithprobfn(self.rfit, r_df_in)
         r_df_out    = r_out[0]
         r_proba_out = r_out[1]
-        y = rpy2.robjects.pandas2ri.ri2py(r_df_out).astype(cdt)
 
-        proba = pd.DataFrame(rpy2.robjects.pandas2ri.ri2py(r_proba_out).T, columns=list(r_proba_out.dimnames[0]), index=X.index)
+        with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+            y = ro.conversion.rpy2py(r_df_out).astype(cdt)
+            proba = pd.DataFrame(ro.conversion.rpy2py(r_proba_out).T, columns=list(r_proba_out.dimnames[0]), index=X.index)
 
         return proba
 
@@ -926,7 +951,8 @@ class ParametricEMNetAndDataDiscreteBayesNetwork(NetAndDataDiscreteBayesNetwork)
 # mc-mi: monte-carlo mutual information
 def constrained_base_structure_learning_si_hiton_pc(ldf, test="mc-mi", undirected=False):
     rhitonpcfn = rpy2.robjects.r['si.hiton.pc']
-    return rhitonpcfn(rpy2.robjects.pandas2ri.py2ri(ldf), test=test, undirected=undirected)
+    with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+        return rhitonpcfn(ro.conversion.py2rpy(ldf), test=test, undirected=undirected)
 
 # http://www.bnlearn.com/documentation/man/constraint.html
 # si.hiton.pc(x, cluster = NULL, whitelist = NULL, blacklist = NULL, test = NULL, alpha = 0.05, B = NULL, max.sx = NULL, debug = FALSE, optimized = FALSE, strict = FALSE, undirected = TRUE)
@@ -948,7 +974,8 @@ class ConstraintBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 # http://www.bnlearn.com/documentation/man/hc.html
 # hc(rdf_lt, score = "bic", iss=1, restart = 10, perturb = 5, start = random.graph(names(rdf_lt)))
 def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart=10, perturb=5, start='random_graph', whitelist=None):
-    rdf = rpy2.robjects.pandas2ri.py2ri(ldf)
+    with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+        rdf = ro.conversion.py2rpy(ldf)
     rhcfn = rpy2.robjects.r['hc']
     if start == 'random_graph':
         rrandomgraphfn = rpy2.robjects.r['random.graph']
@@ -957,7 +984,8 @@ def score_base_structure_learning_hill_climbing(ldf, score='bic', iss=1, restart
     else:
         start = rpy2.rinterface.NULL
     if whitelist is not None:
-        rwl = rpy2.robjects.pandas2ri.py2ri(whitelist)
+        with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+            rwl = ro.conversion.py2rpy(whitelist)
     else:
         rwl = rpy2.rinterface.MissingArg
     return rhcfn(rdf, score=score, iss=iss, restart=restart, perturb=perturb, start=start, whitelist=rwl)
@@ -967,6 +995,8 @@ class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
 
     def __init__(self, ldf=None, predict_var=None, algorithm='hc', whitelist=None):
         super().__init__(ldf, predict_var=predict_var)
+        self.algorithm = algorithm
+        self.whitelist = whitelist
         self.algorithmfn = None
         if algorithm == 'hc':
             self.algorithmfn = lambda ldf: score_base_structure_learning_hill_climbing(ldf, whitelist=whitelist)
@@ -979,8 +1009,8 @@ class ScoreBasedNetFromDataDiscreteBayesNetwork(LearningBayesNetworkBase):
         return self
 
 class StructuralEMNetFromDataDiscreteBayesNetworkBase(LearningBayesNetworkBase):
-    def __init__(self, ldf=None):
-        super().__init__(ldf)
+    def __init__(self, ldf=None, predict_var=None):
+        super().__init__(ldf, predict_var=predict_var)
         self.latent_names = identify_latent_variables(self.df)
         if len(self.latent_names) == 0:
             raise ValueError('Expecting a dataframe with some latent variables, but does not contain any!')
@@ -1022,7 +1052,7 @@ class StructuralEMNetFromDataDiscreteBayesNetworkBase(LearningBayesNetworkBase):
             count = len(levels)
             a = np.full([count], float(1 / count))
             dimnames = rpy2.robjects.r['list'](rpy2.robjects.StrVector(levels))
-            ra = rpy2.robjects.r['array'](a, dim=count, dimnames=dimnames)
+            ra = rpy2.robjects.r['array'](ro.numpy2ri.numpy2rpy(a), dim=count, dimnames=dimnames)
             idx = list(imputed.columns).index(ln)
             prob_idx = list(f.rfit[idx].names).index('prob')
             f.rfit[idx][prob_idx] = ra
@@ -1054,8 +1084,11 @@ class StructuralEMNetFromDataDiscreteBayesNetwork(StructuralEMNetFromDataDiscret
         rstructuralemfn = rpy2.robjects.r('structural.em')
         rlistfn         = rpy2.robjects.r('list')
 
+        with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+            rwhitelist = ro.conversion.py2rpy(whitelist)
+
         rmaximizeargs_in = {
-            'whitelist': whitelist
+            'whitelist': rwhitelist
         }
         rmaximizeargs = rlistfn(**rmaximizeargs_in)
 
@@ -1172,12 +1205,14 @@ def dict2rlist(d):
 
 
 def hybrid_structure_learning_mmhc(ldf):
-    rdf = rpy2.robjects.pandas2ri.py2ri(ldf)
+    with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+        rdf = ro.conversion.py2rpy(ldf)
     rmmhcfn = rpy2.robjects.r['mmhc']
     return rmmhcfn(rdf)
 
 def hybrid_structure_learning_rxmax2_sihitonpc_tabu(ldf):
-    rdf = rpy2.robjects.pandas2ri.py2ri(ldf)
+    with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+        rdf = ro.conversion.py2rpy(ldf)
     rrsmax2fn = rpy2.robjects.r['rsmax2']
     restrict_args = {'restrict.args': dict2rlist(dict(test = "x2", alpha = 0.01))}
     maximize_args = {'maximize_args': dict2rlist(dict(score = "bic", tabu = 10))}
@@ -1248,7 +1283,9 @@ def rmatrix_to_xarray(rmatrix):
             dim_names += [dname]
             levels = list(dims.rx(dname)[0])
             coords.update({dname: levels})
-    values = rpy2.robjects.pandas2ri.ri2py(rmatrix)
+
+    with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+        values = ro.conversion.rpy2py(rmatrix)
 
     ar = xr.DataArray(values, dims=dim_names, coords=coords)
     return ar
@@ -1277,7 +1314,9 @@ def convert_to_xarray_dataset(rfit):
                 dim_names += [dname]
                 levels = list(dims.rx(dname)[0])
                 coords.update({dname: levels})
-        values = rpy2.robjects.pandas2ri.ri2py(prob)
+
+        with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+            values = ro.conversion.rpy2py(prob)
 
         ar = xr.DataArray(values, dims = dim_names, coords= coords)
         ds['cpt' + node] = ar
@@ -1553,8 +1592,8 @@ def relative_mutual_information_(seq1, seq2):
         return 1.0
 
     eps = np.finfo(np.float64).eps
-    eu_ = np.max([sklearn.metrics.cluster.supervised.entropy(u_), eps])
-    ev_ = np.max([sklearn.metrics.cluster.supervised.entropy(v_), eps])
+    eu_ = np.max([sklearn.metrics.cluster._supervised.entropy(u_), eps])
+    ev_ = np.max([sklearn.metrics.cluster._supervised.entropy(v_), eps])
     mi_ = sklearn.metrics.mutual_info_score(u_, v_)
     # print('{},{},{}'.format(eu_,ev_,mi_))
     return mi_, eu_, ev_
@@ -1681,8 +1720,9 @@ def bn_arcs_strengths(bn_base, ldf=None, criterion='loglik'):
         raise RuntimeError('You did neither provide an input value for ldf nor does the network contain a df value!')
 
     rarcstrengthfn = rpy2.robjects.r('arc.strength')
-    rdf = rarcstrengthfn(bn_base.rnet, ldf, criterion=criterion)
-    ldf = rpy2.robjects.pandas2ri.ri2py(rdf).sort_values(['strength'], ascending=True)
+    with rpy2.robjects.conversion.localconverter(ro.default_converter + rpy2.robjects.pandas2ri.converter):
+        rdf = rarcstrengthfn(bn_base.rnet, ro.conversion.py2rpy(ldf), criterion=criterion)
+        ldf = ro.conversion.rpy2py(rdf).sort_values(['strength'], ascending=True)
     ldf.columns = ['from', 'to', 'strength']
     return ldf
 

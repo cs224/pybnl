@@ -34,13 +34,24 @@ def install_R_dependencies():
     utils.chooseCRANmirror(ind=1) # select the first mirror in the list
 
     rpy2.robjects.r('''
-                library(curl)
-                tmp <- tempfile()
-                curl_download("https://bioconductor.org/biocLite.R", tmp)
-                source(tmp)
-                biocLite(c("graph", "RBGL"), suppressUpdates=TRUE, suppressAutoUpdate=TRUE)
-
-                list.of.packages <- c("devtools", "printr", "bnlearn", "gRbase", "gRain")
+                install.packages(c("cli"))
+                
+                list.of.packages <- c("devtools")
+                new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+                if(length(new.packages)) install.packages(new.packages)
+                
+                # if (!requireNamespace("LexisPlotR", quietly = TRUE)) devtools::install_github("ottlngr/LexisPlotR", force = TRUE)
+                
+                list.of.packages <- c("printr", "bnlearn")
+                new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+                if(length(new.packages)) install.packages(new.packages)
+                
+                if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+                list.of.packages <- c("graph", "RBGL", "Rgraphviz")
+                new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+                BiocManager::install(new.packages, update = FALSE, ask = FALSE)
+                
+                list.of.packages <- c("gRbase", "gRain", "rmarkdown")
                 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
                 if(length(new.packages)) install.packages(new.packages)
         ''')
@@ -200,13 +211,14 @@ setup(
         'matplotlib>=2.2.0',
         'seaborn>=0.8.0',
         'qgrid>=1.0.2',
-        'rpy2>=2.9.1',
+        'rpy2>=3.2.6',
         'libpgm>=1.3',
         'networkx>=2.1',
         'pgmpy>=0.1.6',
         'graphviz>=0.8.3',
         'xarray>=0.10.3',
         'tqdm>=4.23.4',
+        'simplegeneric>=0.8.1',
     ],  # Optional
 
     # List additional groups of dependencies here (e.g. development
