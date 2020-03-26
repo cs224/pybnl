@@ -237,6 +237,54 @@ class BayesNetworkBase():
         else:
             return result, rresult
 
+    # https://cran.r-project.org/web/packages/gRain/
+    # https://www.jstatsoft.org/article/view/v046i10/v46i10.pdf
+    def dbd(self):
+        # querygrain(gin1, nodes = c("lung", "bronc"), type = "marginal")
+        # rpropagatefn = rpy2.robjects.r['propagate']
+        # rgetfindingfn = rpy2.robjects.r['getFinding']
+        # rgetfindingfn(rpropagatefn(self.grain))
+
+        rquerygrainfn = rpy2.robjects.r['querygrain']
+        nodes = self.structure().nodes()
+        rnodes = rpy2.robjects.StrVector(nodes)
+        rresult = rquerygrainfn(self.grain, nodes=rnodes, type='joint')
+
+        return rmatrix_to_xarray(rresult)
+
+    def dbd_(self):
+        xrs = []
+        for dtcpm in self.dtcpm_list:
+            xrs += [dtcpm.lcpm_xr]
+
+        r = xrs[0]
+        for i in range(1, len(xrs)):
+            r = r * xrs[i]
+
+        return r
+
+    def marginal(self, nodes, only_python_result=True):
+        rquerygrainfn = rpy2.robjects.r['querygrain']
+        single_node = False
+        if not isinstance(nodes, list):
+            single_node = nodes
+            nodes = list(nodes)
+        rnodes = rpy2.robjects.StrVector(nodes)
+        rresult = rquerygrainfn(self.grain, nodes=rnodes, type='marginal')
+        result_list = []
+        for rr in list(rresult):
+            names = list(rr.names[0])
+            result_list += [dict(zip(names,list(rr)))]
+
+        result = dict(zip(rresult.names, result_list))
+        if single_node:
+            result = result[single_node]
+
+        if only_python_result:
+            return result
+        else:
+            return result, rresult
+
 
     def pevidence(self, evidence):
         self.process_input_evidence(evidence)
